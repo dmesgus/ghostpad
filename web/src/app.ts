@@ -12,15 +12,17 @@ sensitivity.value = String(Number.isFinite(storedSensitivity) ? Math.min(3, Math
 natural.checked = read('natural') !== 'false';
 let scrollSpeed = Number(read('scrollSpeed') || 1);
 if (![.6, 1, 1.6].includes(scrollSpeed)) scrollSpeed = 1;
-function preferences() { $('sensitivity-value').textContent = `${Number(sensitivity.value).toFixed(1)}×`; save('sensitivity', sensitivity.value); save('natural', String(natural.checked)); }
+function preferences() { $('sensitivity-value').textContent = `${Number(sensitivity.value).toFixed(1)}×`; save('sensitivity', sensitivity.value); save('natural', String(natural.checked)); for (const button of $('tracking-presets').querySelectorAll<HTMLButtonElement>('button')) button.setAttribute('aria-pressed', String(Number(button.dataset.speed) === Number(sensitivity.value))); }
 preferences(); sensitivity.oninput = preferences; natural.onchange = preferences;
 let socket: WebSocket | null = null, ready = false, paused = false, retry = 500, reconnect = 0, heartbeat = 0, lastPong = 0, connectionDeadline = 0;
 let lastMotion = -Infinity, lastPing = 0;
 let padTouches = 0, ignorePad = false;
 const superPointers = new Set<number>();
-let textTimer = 0, textQueue: ArrayBuffer[] = [], previousText = '', composing = false, composeMode = false;
+let textTimer = 0, textQueue: ArrayBuffer[] = [], previousText = '', composing = false;
 const modifiers = new Map<string, number>();
-let hold = 0, frame = 0, pending: { type: 'move' | 'scroll'; dx: number; dy: number } | null = null;
+// Keyboard modifiers are armed locally; only a completed shortcut holds remote keys.
+const shortcutModifiers = new Map<string, number>();
+let hold = 0, frame = 0, pending: { type: 'move' | 'scroll'; dx: number; dy: number } | { type: 'zoom'; scale: number } | null = null;
 function status(label: string, detail: string, online = false) { $('status').textContent = label; $('detail').textContent = detail; $('dot').classList.toggle('online', online); document.body.classList.toggle('connected', online && label !== 'Preview'); if (!online) $('hint').textContent = detail; }
 function transmit(bytes: ArrayBuffer) {
   if (!ready || socket?.readyState !== WebSocket.OPEN) return;
@@ -37,23 +39,43 @@ function send(code: number, dx?: number, dy?: number) {
   transmit(bytes);
 }
 function keyEvent(op: number, usage: number) { flush(); transmit(new Uint8Array([op, usage]).buffer); }
-function flush() { clearTimeout(frame); frame = 0; if (pending) { lastMotion = performance.now(); send(pending.type === 'move' ? 1 : 2, pending.dx, pending.dy); pending = null; } }
+function flush() {
+  clearTimeout(frame); frame = 0;
+  if (pending) {
+    lastMotion = performance.now();
+    if (pending.type === 'zoom') {
+      const bytes = new ArrayBuffer(5), view = new DataView(bytes);
+      view.setUint8(0, 15); view.setFloat32(1, pending.scale, true); transmit(bytes);
+    } else send(pending.type === 'move' ? 1 : 2, pending.dx, pending.dy);
+    pending = null;
+  }
+}
 function action(a: Action) {
-  if (a.type === 'move' || a.type === 'scroll') {
+  if (a.type === 'zoomend') {
+    flush(); send(16);
+  } else if (a.type === 'move' || a.type === 'scroll' || a.type === 'zoom') {
     if (pending && pending.type !== a.type) flush();
-    const factor = a.type === 'move' ? Number(sensitivity.value) : scrollSpeed * (natural.checked ? -1 : 1);
-    if (!pending) pending = { type: a.type, dx: 0, dy: 0 };
-    pending.dx += a.dx * factor; pending.dy += a.dy * factor;
+    // Pinch carries an absolute scale: coalescing keeps the latest sample.
+    if (a.type === 'zoom') pending = { type: 'zoom', scale: a.scale };
+    else {
+      const factor = a.type === 'move' ? Number(sensitivity.value) : scrollSpeed * (natural.checked ? -1 : 1);
+      if (!pending || pending.type === 'zoom') pending = { type: a.type, dx: 0, dy: 0 };
+      pending.dx += a.dx * factor; pending.dy += a.dy * factor;
+    }
     if (!frame) { const delay = 8 - (performance.now() - lastMotion); if (delay <= 0) flush(); else frame = window.setTimeout(flush, delay); }
   } else { flush(); send(({ left: 3, right: 4, down: 5, up: 6, rightdown: 12, rightup: 13 } as Record<string, number>)[a.type]); }
   $('drag-state').hidden = a.type !== 'down' && !gestures.dragging;
 }
 const gestures = new Gestures(action, () => modifiers.has('super'));
-function cancel() { stopText(); superPointers.clear(); padTouches = 0; ignorePad = false; clearTimeout(hold); clearTimeout(frame); frame = 0; pending = null; lastMotion = -Infinity; gestures.cancel(); send(7); modifiers.clear(); updateModifiers(); pad.classList.remove('active'); $('drag-state').hidden = true; }
+function cancel() { stopText(); superPointers.clear(); padTouches = 0; ignorePad = false; clearTimeout(hold); clearTimeout(frame); frame = 0; pending = null; lastMotion = -Infinity; gestures.cancel(); send(7); modifiers.clear(); shortcutModifiers.clear(); updateModifiers(); pad.classList.remove('active'); $('drag-state').hidden = true; }
 for (const type of ['touchstart', 'touchmove', 'touchend'] as const) {
   pad.addEventListener(type, (event: TouchEvent) => {
+    // Touches retain their original target when sliding across zone boundaries.
+    // Use all surface touches, including those starting on different child elements.
+    if ((event.target as Element).closest('button')) return;
     event.preventDefault(); if (!ready) return;
-    const points = Array.from(event.targetTouches).map(t => ({ x: t.clientX, y: t.clientY }));
+    const points = Array.from(event.touches).filter(t => pad.contains(t.target as Node) && !(t.target as Element).closest('button')).map(t => ({ x: t.clientX, y: t.clientY }));
+    if (type === 'touchstart') { nativeInput.blur(); resetTextContext(); }
     padTouches = points.length;
     if (ignorePad) { if (!padTouches) ignorePad = false; return; }
     gestures.update(points, performance.now()); pad.classList.toggle('active', points.length > 0);
@@ -124,24 +146,27 @@ $('disconnect').onclick = () => { paused = !paused; $('disconnect').textContent 
 $('forget').onclick = () => { paused = true; suspend(); key = ''; save('key', ''); status('Pair your phone', 'Pairing forgotten on this phone. Scan a QR code to connect again.'); $('hint').textContent = 'Scan your computer’s QR code to connect.'; closeSettings(); };
 
 function updateModifiers() {
-  for (const name of ['super', 'ctrl', 'alt', 'shift']) $(`mod-${name}`).setAttribute('aria-pressed', String(modifiers.has(name)));
+  $('mod-super').setAttribute('aria-pressed', String(modifiers.has('super')));
+  for (const name of ['super', 'ctrl', 'alt', 'shift']) $(name === 'super' ? 'key-super' : `mod-${name}`).setAttribute('aria-pressed', String(shortcutModifiers.has(name)));
+  const names = Array.from(shortcutModifiers.keys(), name => name[0].toUpperCase() + name.slice(1));
+  $('shortcut-help').textContent = names.length ? `${names.join(' + ')} · tap a key` : 'Tap modifiers, then a key. They clear after each shortcut.';
   document.body.classList.toggle('super-held', modifiers.has('super'));
-  if (ready) $('hint').textContent = modifiers.has('super') ? 'Super held · 1 finger moves · 2 fingers resize' : 'Hold Super below to move or resize windows.';
+  if (ready) $('hint').textContent = modifiers.has('super') ? 'Super held · 1 finger moves · 2 fingers resize' : 'Pinch to zoom · hold Super to move or resize windows.';
 }
 function toggleModifier(name: string, usage: number) {
   if (!ready || textQueue.length) return;
-  gestures.cancel(); // release any pointer button before changing its modifier
-  const down = !modifiers.has(name);
-  keyEvent(down ? 9 : 10, usage);
-  if (down) modifiers.set(name, usage); else modifiers.delete(name);
+  keyboardMode(false); resetTextContext();
+  gestures.cancel(); setSuper(false);
+  if (shortcutModifiers.has(name)) shortcutModifiers.delete(name); else shortcutModifiers.set(name, usage);
   updateModifiers();
 }
-for (const [name, usage] of [['ctrl', 224], ['alt', 226], ['shift', 225]] as const) {
-  $(`mod-${name}`).onclick = () => toggleModifier(name, usage);
+for (const [name, usage] of [['super', 227], ['ctrl', 224], ['alt', 226], ['shift', 225]] as const) {
+  $(name === 'super' ? 'key-super' : `mod-${name}`).onclick = () => toggleModifier(name, usage);
 }
 function setSuper(down: boolean) {
   if (down && (!ready || textQueue.length)) return;
   if (down === modifiers.has('super')) return;
+  if (down) { nativeInput.blur(); resetTextContext(); shortcutModifiers.clear(); }
   gestures.cancel();
   if (padTouches) ignorePad = true;
   keyEvent(down ? 9 : 10, 227);
@@ -160,15 +185,15 @@ superButton.addEventListener('keydown', event => { if (event.key === ' ' || even
 superButton.addEventListener('keyup', event => { if (event.key === ' ' || event.key === 'Enter') { event.preventDefault(); setSuper(false); } });
 superButton.addEventListener('blur', () => { if (!superPointers.size) setSuper(false); });
 window.addEventListener('blur', cancel);
-$('right-click').onclick = () => { if (ready) { gestures.cancel(); flush(); send(4); } };
+$('right-click').onclick = () => { if (ready) { nativeInput.blur(); resetTextContext(); gestures.cancel(); if (padTouches) ignorePad = true; clearTimeout(hold); flush(); send(4); } };
 $('keyboard-toggle').onclick = () => {
   if (!$('keyboard-panel').hidden) { closeKeyboard(); return; }
   cancel(); closeSettings(); $('keyboard-panel').hidden = false;
   $('keyboard-toggle').setAttribute('aria-expanded', 'true'); document.body.classList.toggle('keyboard-open', true);
 };
 const nativeInput = $<HTMLTextAreaElement>('native-input');
-function resetTextContext() { previousText = ''; if (!composeMode) nativeInput.value = ''; }
-function stopText() { clearTimeout(textTimer); textTimer = 0; textQueue = []; previousText = ''; if (!composeMode) $<HTMLTextAreaElement>('native-input').value = ''; }
+function resetTextContext() { previousText = ''; nativeInput.value = ''; }
+function stopText() { composing = false; clearTimeout(textTimer); textTimer = 0; textQueue = []; previousText = ''; $<HTMLTextAreaElement>('native-input').value = ''; }
 function pumpText() {
   textTimer = 0;
   if (!ready) { stopText(); return; }
@@ -188,42 +213,27 @@ function encodeText(previous: string, value: string) {
   return packets;
 }
 function nativeEdit() {
-  if (composing || composeMode) return;
+  if (composing) return;
   try {
     if (queueText(encodeText(previousText, nativeInput.value))) {
       previousText = normalizeText(nativeInput.value);
-      $('typing-help').textContent = 'Realtime · text goes to the focused computer window.';
+      $('typing-help').textContent = 'Typing into the focused computer window.';
     }
   } catch (error) { $('typing-help').textContent = (error as Error).message; }
 }
 nativeInput.addEventListener('focus', () => {
   // Plain typing must not accidentally become Super/Ctrl/Alt shortcuts.
-  gestures.cancel(); flush(); send(7); modifiers.clear(); superPointers.clear(); updateModifiers();
+  gestures.cancel(); flush(); send(7); modifiers.clear(); shortcutModifiers.clear(); superPointers.clear(); updateModifiers();
 });
 nativeInput.addEventListener('compositionstart', () => { composing = true; });
 nativeInput.addEventListener('compositionend', () => { composing = false; nativeEdit(); });
 nativeInput.addEventListener('input', nativeEdit);
 // Backspace on an empty local buffer still deletes on the remote computer.
 nativeInput.addEventListener('beforeinput', (event: InputEvent) => {
-  if (!composeMode && !composing && event.inputType === 'deleteContentBackward' && !nativeInput.value && !previousText) {
+  if (!composing && event.inputType === 'deleteContentBackward' && !nativeInput.value && !previousText) {
     event.preventDefault(); queueText([new Uint8Array([11, 42]).buffer]);
   }
 });
-function switchTypingMode(compose: boolean) {
-  composeMode = compose; previousText = ''; nativeInput.value = '';
-  $('compose-mode').setAttribute('aria-pressed', String(compose)); $('realtime-mode').setAttribute('aria-pressed', String(!compose));
-  $('send-text').hidden = !compose;
-  $('typing-help').textContent = compose ? 'Write first, then send. English / US characters supported.' : 'Realtime · text goes to the focused computer window.';
-  nativeInput.focus();
-}
-$('compose-mode').onclick = () => switchTypingMode(true);
-$('realtime-mode').onclick = () => switchTypingMode(false);
-$('send-text').onclick = () => {
-  try {
-    gestures.cancel(); send(7); modifiers.clear(); updateModifiers();
-    if (queueText(encodeText('', nativeInput.value))) { nativeInput.value = ''; previousText = ''; $('typing-help').textContent = 'Text sent to your computer.'; }
-  } catch (error) { $('typing-help').textContent = (error as Error).message; }
-};
 function keyboardMode(native: boolean) {
   $('native-panel').hidden = !native; $('keyboard').hidden = native;
   $('native-mode').setAttribute('aria-pressed', String(native)); $('grid-mode').setAttribute('aria-pressed', String(!native));
@@ -234,7 +244,17 @@ $('grid-mode').onclick = () => keyboardMode(false);
 function specialKey(event: MouseEvent) {
   const button = (event.target as HTMLElement).closest<HTMLButtonElement>('button[data-key]');
   if (!button || !ready) return;
-  gestures.cancel(); resetTextContext(); flush(); queueText([new Uint8Array([11, Number(button.dataset.key)]).buffer]);
+  if (shortcutModifiers.size && textQueue.length) return;
+  nativeInput.blur(); gestures.cancel(); resetTextContext(); flush();
+  const usage = Number(button.dataset.key);
+  if (shortcutModifiers.size) {
+    // Send the complete chord in this turn, with no timers that could leave a modifier held.
+    const held = Array.from(shortcutModifiers.values());
+    for (const modifier of held) keyEvent(9, modifier);
+    keyEvent(11, usage);
+    for (const modifier of held.reverse()) keyEvent(10, modifier);
+    shortcutModifiers.clear(); updateModifiers();
+  } else queueText([new Uint8Array([11, usage]).buffer]);
 }
 $('keyboard').addEventListener('click', specialKey);
 $('special-keys').addEventListener('click', specialKey);
@@ -250,7 +270,10 @@ for (const id of ['tracking-presets', 'scroll-presets']) {
 // Fit the sheets above Safari's software keyboard without scrolling the touch surface away.
 function fitViewport() {
   const height = window.visualViewport?.height;
-  if (height) document.querySelector('main')!.style.height = `${height}px`;
+  if (height) {
+    document.querySelector('main')!.style.height = `${height}px`;
+    document.body.classList.toggle('compact-keyboard', height < 500);
+  }
 }
 window.visualViewport?.addEventListener('resize', fitViewport);
 window.addEventListener('resize', fitViewport); fitViewport();

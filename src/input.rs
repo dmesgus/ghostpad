@@ -21,6 +21,8 @@ pub enum Command {
     Key(u16, bool),
     KeyTap(u16),
     Text(Vec<u8>),
+    Pinch(f32),
+    PinchEnd,
 }
 pub fn decode(b: &[u8]) -> io::Result<Command> {
     let bad = || io::Error::new(io::ErrorKind::InvalidData, "Invalid input packet");
@@ -53,13 +55,28 @@ pub fn decode(b: &[u8]) -> io::Result<Command> {
         }
         [12] => Ok(Command::RightDown),
         [13] => Ok(Command::RightUp),
-        [14, text @ ..] if !text.is_empty() && text.len() <= 120 && text.iter().all(|b| crate::keys::ascii_key(*b).is_some()) => Ok(Command::Text(text.to_vec())),
+        [14, text @ ..]
+            if !text.is_empty()
+                && text.len() <= 120
+                && text.iter().all(|b| crate::keys::ascii_key(*b).is_some()) =>
+        {
+            Ok(Command::Text(text.to_vec()))
+        }
+        [15, rest @ ..] if rest.len() == 4 => {
+            let scale = f32::from_le_bytes(rest.try_into().unwrap());
+            if !scale.is_finite() || !(0.1..=6.).contains(&scale) {
+                return Err(bad());
+            }
+            Ok(Command::Pinch(scale))
+        }
+        [16] => Ok(Command::PinchEnd),
         _ => Err(bad()),
     }
 }
 pub struct Pointer {
     device: Option<File>,
     keyboard: Option<File>,
+    touchpad: crate::touchpad::Touchpad,
     keys: BTreeSet<u16>,
     right_down: bool,
     #[cfg(test)]
@@ -125,7 +142,7 @@ fn create_device(keyboard: bool) -> io::Result<File> {
 impl Pointer {
     #[cfg(test)]
     pub fn is_down(&self) -> bool {
-        self.down || self.right_down || !self.keys.is_empty()
+        self.down || self.right_down || !self.keys.is_empty() || self.touchpad.is_active()
     }
     pub fn new(preview: bool) -> io::Result<Self> {
         let device = if preview {
@@ -141,6 +158,7 @@ impl Pointer {
         Ok(Self {
             device,
             keyboard,
+            touchpad: crate::touchpad::Touchpad::new(preview)?,
             keys: BTreeSet::new(),
             right_down: false,
             #[cfg(test)]
@@ -162,7 +180,10 @@ impl Pointer {
         self.events.push((true, code, i32::from(down)));
         Self::write_events(&mut self.keyboard, &[(1, code, i32::from(down))])
     }
-    fn write_events(device: &mut Option<File>, events: &[(u16, u16, i32)]) -> io::Result<()> {
+    pub(crate) fn write_events(
+        device: &mut Option<File>,
+        events: &[(u16, u16, i32)],
+    ) -> io::Result<()> {
         if let Some(f) = device {
             let mut bytes = Vec::with_capacity((events.len() + 1) * 24);
             for &(kind, code, value) in events.iter().chain(std::iter::once(&(0, 0, 0))) {
@@ -234,25 +255,38 @@ impl Pointer {
             }
             Command::KeyTap(code) => {
                 if !self.keys.contains(&code) {
-                    self.key_event(code, true)?;
-                    self.key_event(code, false)?;
+                    self.handle(Command::Key(code, true))?;
+                    self.handle(Command::Key(code, false))?;
                 }
             }
             Command::Text(text) => {
-                if !self.keys.is_empty() { return Err(io::Error::new(io::ErrorKind::InvalidData,"Release modifiers before typing text")); }
+                if !self.keys.is_empty() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "Release modifiers before typing text",
+                    ));
+                }
                 for byte in text {
-                    let (code, shift) = crate::keys::ascii_key(byte).ok_or_else(||io::Error::other("Unsupported text"))?;
-                    if shift { self.handle(Command::Key(42, true))?; }
+                    let (code, shift) = crate::keys::ascii_key(byte)
+                        .ok_or_else(|| io::Error::other("Unsupported text"))?;
+                    if shift {
+                        self.handle(Command::Key(42, true))?;
+                    }
                     self.handle(Command::KeyTap(code))?;
-                    if shift { self.handle(Command::Key(42, false))?; }
+                    if shift {
+                        self.handle(Command::Key(42, false))?;
+                    }
                 }
             }
+            Command::Pinch(scale) => self.touchpad.update(scale)?,
+            Command::PinchEnd => self.touchpad.release()?,
             Command::Release => self.release()?,
             Command::Ping => {}
         }
         Ok(())
     }
     pub fn release(&mut self) -> io::Result<()> {
+        self.touchpad.release()?;
         if self.down {
             self.emit(&[(1, 272, 0)])?;
         }
@@ -330,6 +364,62 @@ mod tests {
         );
         assert!(decode(&[9, 255]).is_err());
         assert!(decode(&[11, 0]).is_err());
+    }
+    #[test]
+    fn native_text_has_correct_shift_order_and_no_stuck_keys() {
+        let mut p = Pointer::new(true).unwrap();
+        p.handle(decode(b"\x0eHi!").unwrap()).unwrap();
+        assert_eq!(
+            p.events,
+            vec![
+                (true, 42, 1),
+                (true, 35, 1),
+                (true, 35, 0),
+                (true, 42, 0),
+                (true, 23, 1),
+                (true, 23, 0),
+                (true, 42, 1),
+                (true, 2, 1),
+                (true, 2, 0),
+                (true, 42, 0)
+            ]
+        );
+        assert!(!p.is_down());
+    }
+    #[test]
+    fn native_text_rejects_unsupported_or_modified_input() {
+        assert!(decode(&[14, 0xff]).is_err());
+        assert!(decode(&[14]).is_err());
+        assert!(decode(&[14, 27]).is_err());
+        assert!(decode(&[14; 122]).is_err());
+        let mut p = Pointer::new(true).unwrap();
+        p.handle(decode(&[9, 224]).unwrap()).unwrap();
+        assert!(p.handle(decode(b"\x0ec").unwrap()).is_err());
+        p.release().unwrap();
+        assert!(!p.is_down());
+    }
+    #[test]
+    fn pinch_protocol_is_native_and_release_clears_contacts() {
+        let mut p = Pointer::new(true).unwrap();
+        let packet = [vec![15], 1.375f32.to_le_bytes().to_vec()].concat();
+        assert_eq!(decode(&packet).unwrap(), Command::Pinch(1.375));
+        p.handle(decode(&packet).unwrap()).unwrap();
+        assert!(p.is_down());
+        assert!(
+            p.events.is_empty(),
+            "Pinch must not emit keyboard or relative mouse events"
+        );
+        p.handle(decode(&[16]).unwrap()).unwrap();
+        assert!(!p.is_down());
+        p.handle(Command::Pinch(0.8)).unwrap();
+        p.handle(Command::Release).unwrap();
+        assert!(!p.is_down());
+        for scale in [f32::NAN, f32::INFINITY, -1., 0., 6.01] {
+            assert!(decode(&[vec![15], scale.to_le_bytes().to_vec()].concat()).is_err());
+        }
+        for packet in [&[15][..], &[15, 0, 0, 0], &[15, 0, 0, 0, 0, 0], &[16, 0]] {
+            assert!(decode(packet).is_err());
+        }
     }
     #[test]
     fn rejects_bad_packets() {

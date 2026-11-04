@@ -1,11 +1,11 @@
 {
   "name": "ghostpad",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "scripts": {
     "build:web": "tsc -p tsconfig.json",
-    "test": "node tests/gestures.test.mjs && node tests/startup.test.mjs",
+    "test": "node tests/gestures.test.mjs && node tests/startup.test.mjs && node tests/text.test.mjs",
     "test:browser": "node tests/browser.mjs"
   },
   "devDependencies": {

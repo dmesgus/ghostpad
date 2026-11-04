@@ -13,8 +13,9 @@ pub fn page() -> &'static Page {
         let gestures =
             include_str!("../web/gestures.js").replace("export class Gestures", "class Gestures");
         let text = include_str!("../web/text.js").replace("export function", "function");
-        let app =
-            include_str!("../web/app.js").replace("import { Gestures } from './gestures.js';", "").replace("import { textEdit, normalizeText } from './text.js';", "");
+        let app = include_str!("../web/app.js")
+            .replace("import { Gestures } from './gestures.js';", "")
+            .replace("import { textEdit, normalizeText } from './text.js';", "");
         let script = format!("(function () {{\n{gestures}\n{text}\n{app}\n}})();");
         let html = include_str!("../web/index.html")
             .replace(

@@ -43,7 +43,7 @@ class Receiver(unittest.TestCase):
   while len(data)<h[1]:data+=s.recv(h[1]-len(data))
   return data
  def test_assets_and_headers(self):
-  c=http.client.HTTPConnection('127.0.0.1',self.port);c.request('GET','/');r=c.getresponse();self.assertEqual(r.status,200);self.assertIn("frame-ancestors 'none'",r.getheader('Content-Security-Policy'));self.assertIn(b'A little space',r.read());c.close()
+  c=http.client.HTTPConnection('127.0.0.1',self.port);c.request('GET','/');r=c.getresponse();self.assertEqual(r.status,200);self.assertIn("frame-ancestors 'none'",r.getheader('Content-Security-Policy'));self.assertIn(b'Tap to start typing',r.read());c.close()
  def test_bad_host(self):
   c=http.client.HTTPConnection('127.0.0.1',self.port);c.request('GET','/',headers={'Host':'evil.example'});self.assertEqual(c.getresponse().status,403);c.close()
  def test_wrong_key(self):
@@ -53,7 +53,7 @@ class Receiver(unittest.TestCase):
   with self.ws() as first:
    self.assertEqual(self.recv(first),b'ready:preview')
    with self.ws() as second:self.assertEqual(self.recv(second),b'busy')
-   for packet in [b'\x01'+struct.pack('<ff',.25,-.5),b'\x02'+struct.pack('<ff',10,20),b'\x03',b'\x04',b'\x05',b'\x06',b'\x07',b'\x08']:self.send(first,2,packet)
+   for packet in [b'\x01'+struct.pack('<ff',.25,-.5),b'\x02'+struct.pack('<ff',10,20),b'\x03',b'\x04',b'\x05',b'\x06',b'\x07',b'\x0f'+struct.pack('<f',1.375),b'\x10',b'\x08']:self.send(first,2,packet)
    self.assertEqual(self.recv(first),b'pong')
   time.sleep(.05)
   with self.ws() as s:self.assertEqual(self.recv(s),b'ready:preview')

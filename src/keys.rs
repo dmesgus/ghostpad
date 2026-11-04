@@ -61,17 +61,39 @@ pub fn ascii_key(byte: u8) -> Option<(u16, bool)> {
     let (usage, shift) = match byte {
         b'a'..=b'z' => (byte - b'a' + 4, false),
         b'A'..=b'Z' => (byte - b'A' + 4, true),
-        b'1'..=b'9' => (byte - b'1' + 30, false), b'0' => (39, false),
-        b'\n' => (40, false), b'\t' => (43, false), b' ' => (44, false),
+        b'1'..=b'9' => (byte - b'1' + 30, false),
+        b'0' => (39, false),
+        b'\n' => (40, false),
+        b'\t' => (43, false),
+        b' ' => (44, false),
         _ => {
             let plain = b"-=[]\\;'`,./";
             let shifted = b"_+{}|:\"~<>?";
-            let usages = [45,46,47,48,49,51,52,53,54,55,56];
-            if let Some(i) = plain.iter().position(|b| *b == byte) { (usages[i], false) }
-            else if let Some(i) = shifted.iter().position(|b| *b == byte) { (usages[i], true) }
-            else if let Some(i) = b"!@#$%^&*()".iter().position(|b| *b == byte) { (if i == 9 {39} else {30 + i as u8}, true) }
-            else { return None; }
+            let usages = [45, 46, 47, 48, 49, 51, 52, 53, 54, 55, 56];
+            if let Some(i) = plain.iter().position(|b| *b == byte) {
+                (usages[i], false)
+            } else if let Some(i) = shifted.iter().position(|b| *b == byte) {
+                (usages[i], true)
+            } else {
+                let i = b"!@#$%^&*()".iter().position(|b| *b == byte)?;
+                (if i == 9 { 39 } else { 30 + i as u8 }, true)
+            }
         }
     };
     linux_key(usage).map(|key| (key, shift))
+}
+
+#[cfg(test)]
+mod text_tests {
+    #[test]
+    fn entire_printable_ascii_is_mapped() {
+        for byte in 32..=126 {
+            assert!(super::ascii_key(byte).is_some(), "{byte}");
+        }
+        assert_eq!(super::ascii_key(b'?'), Some((53, true)));
+        assert_eq!(super::ascii_key(b'0'), Some((11, false)));
+        assert_eq!(super::ascii_key(b')'), Some((11, true)));
+        assert_eq!(super::ascii_key(b'\n'), Some((28, false)));
+        assert!(super::ascii_key(127).is_none());
+    }
 }

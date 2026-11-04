@@ -3,6 +3,7 @@ mod input;
 mod keys;
 mod network;
 mod page;
+mod touchpad;
 mod transport;
 mod wire;
 use input::{Command, Pointer};
@@ -260,6 +261,7 @@ fn handle(mut c: impl transport::Stream, state: &State) -> io::Result<()> {
             "/style.css" => ("text/css", include_bytes!("../web/style.css")),
             "/app.js" => ("text/javascript", include_bytes!("../web/app.js")),
             "/gestures.js" => ("text/javascript", include_bytes!("../web/gestures.js")),
+            "/text.js" => ("text/javascript", include_bytes!("../web/text.js")),
             "/icon.svg" => ("image/svg+xml", include_bytes!("../web/icon.svg")),
             "/health" => ("text/plain", b"ghostpad/1"),
             _ => {
@@ -305,7 +307,7 @@ fn run() -> io::Result<()> {
             "--key" => key = Some(args.next().ok_or_else(|| invalid("Missing key"))?),
             "--help" | "-h" => {
                 println!(
-                    "Ghostpad 0.2.0\n  --verbose        Show connection diagnostics (no pairing secrets)\n  --preview        Connect without controlling the cursor\n  --address IP     LAN IPv4 address for pairing and binding\n  --port PORT      Default: 8765\n  --cert FILE --key FILE   Enable HTTPS (certificate must be trusted on phone)\n  --rotate-key     Revoke all previously paired browsers\n\nStart, scan the terminal QR code with your phone, keep Ghostpad open."
+                    "Ghostpad 0.3.0\n  --verbose        Show connection diagnostics (no pairing secrets)\n  --preview        Connect without controlling the cursor\n  --address IP     LAN IPv4 address for pairing and binding\n  --port PORT      Default: 8765\n  --cert FILE --key FILE   Enable HTTPS (certificate must be trusted on phone)\n  --rotate-key     Revoke all previously paired browsers\n\nStart, scan the terminal QR code with your phone, keep Ghostpad open."
                 );
                 return Ok(());
             }
@@ -537,6 +539,21 @@ mod server_tests {
         req.extend(frame(2, &[12]));
         assert!(run(req, &s).0.is_err());
         assert!(!s.pointer.lock().unwrap().is_down());
+    }
+    #[test]
+    fn lost_connection_or_bad_packet_releases_native_pinch() {
+        for ending in [vec![], frame(2, &[99])] {
+            let s = state();
+            let mut req = request("/ws");
+            req.extend(frame(1, s.token.as_bytes()));
+            req.extend(frame(
+                2,
+                &[vec![15], 1.5f32.to_le_bytes().to_vec()].concat(),
+            ));
+            req.extend(ending);
+            assert!(run(req, &s).0.is_err());
+            assert!(!s.pointer.lock().unwrap().is_down());
+        }
     }
     #[test]
     fn second_controller_is_busy() {
