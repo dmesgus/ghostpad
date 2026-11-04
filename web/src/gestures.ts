@@ -17,7 +17,7 @@ export class Gestures {
   private twoBegan = 0;
   private startDistance = 0;
   private lastDistance = 0;
-  private lastTap: { point: Point; time: number } | null = null;
+  private lastTap: number | null = null;
   private tapDrag = false;
   private tapDelta = { x: 0, y: 0 };
   dragging = false;
@@ -34,8 +34,9 @@ export class Gestures {
     if (!this.count && count) {
       const tap = this.lastTap;
       this.reset(); this.began = time; this.windowMode = this.superHeld();
-      // A nearby second touch within 300 ms can continue the tap as a drag.
-      this.tapDrag = !this.windowMode && count === 1 && tap !== null && time >= tap.time && time - tap.time <= 300 && Math.hypot(points[0].x - tap.point.x, points[0].y - tap.point.y) <= 40;
+      // This is a relative touchpad: landing elsewhere does not move the cursor.
+      // A second touch within 300 ms can continue the tap as a drag anywhere.
+      this.tapDrag = !this.windowMode && count === 1 && tap !== null && time >= tap && time - tap <= 300;
     }
     // Preserve a short, deliberate swipe that ends during the decision window.
     if (count < 2 && this.count === 2 && !this.twoMode && !this.suppressed && !this.windowMode && this.twoStart && this.last) {
@@ -46,9 +47,9 @@ export class Gestures {
     if (!count && this.count) {
       let tap = null;
       if (this.dragging || this.twoMode === 'zoom') this.release();
-      else if (!this.consumed && time - this.began < 300 && this.travel < 9 && this.max <= 2) {
+      else if (!this.consumed && time - this.began < 300 && (this.tapDrag || this.travel < 9) && this.max <= 2) {
         this.emit({ type: this.max === 2 ? 'right' : 'left' });
-        if (this.max === 1 && !this.windowMode && this.last) tap = { point: this.last, time };
+        if (this.max === 1 && !this.windowMode) tap = time;
       }
       this.reset(); this.lastTap = tap; return;
     }
@@ -96,7 +97,7 @@ export class Gestures {
           // Buffer slight jitter so double taps stay clicks and a staggered
           // two-finger gesture cannot accidentally press the left button.
           this.tapDelta.x += dx; this.tapDelta.y += dy;
-          if (this.travel >= 3) {
+          if (Math.hypot(this.tapDelta.x, this.tapDelta.y) >= 3) {
             this.tapDrag = false; this.dragging = this.consumed = true;
             this.emit({ type: 'down' });
             this.emit({ type: 'move', dx: this.tapDelta.x, dy: this.tapDelta.y });
@@ -107,7 +108,7 @@ export class Gestures {
     this.last = center; this.lastDistance = distance; this.count = count;
   }
   hold(time: number) {
-    if (!this.windowMode && this.count === 1 && this.max === 1 && this.travel < 7 && !this.suppressed && !this.dragging && time - this.began >= 380) {
+    if (!this.windowMode && this.count === 1 && this.max === 1 && (this.tapDrag || this.travel < 7) && !this.suppressed && !this.dragging && time - this.began >= 380) {
       this.tapDrag = false;
       this.dragging = this.consumed = true; this.emit({ type: 'down' });
       if (this.tapDelta.x || this.tapDelta.y) this.emit({ type: 'move', dx: this.tapDelta.x, dy: this.tapDelta.y });

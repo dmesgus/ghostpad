@@ -24,7 +24,7 @@ const packets=ws=>ws.sent.filter(v=>typeof v!=='string').map(v=>[...new Uint8Arr
 function touch(s,type,points) {s.element('pad').handlers[type]({preventDefault(){},target:s.element('pad'),touches:points.map(([clientX,clientY])=>({clientX,clientY,target:s.element('pad')}))});}
 test('Super hold then two-finger resize sends modifier before button and movement',()=>{const s=start(),ws=ready(s);s.element('mod-super').handlers.pointerdown({preventDefault(){},pointerId:1,pointerType:'touch'});touch(s,'touchstart',[[10,10],[30,10]]);touch(s,'touchmove',[[20,20],[40,20]]);touch(s,'touchend',[]);const p=packets(ws);assert.deepEqual(p.slice(0,2),[[9,227],[12]]);assert.equal(p[2][0],1);assert.deepEqual(p[3],[13]);assert.equal(s.element('mod-super').attrs['aria-pressed'],'true');s.element('mod-super').handlers.pointerup({pointerId:1});assert.deepEqual(packets(ws).at(-1),[10,227]);});
 test('movement sends immediately and coalesces only rapid subsequent events',()=>{const s=start(),ws=ready(s);touch(s,'touchstart',[[0,0]]);touch(s,'touchmove',[[20,0]]);assert.equal(packets(ws).length,1);touch(s,'touchmove',[[30,0]]);touch(s,'touchmove',[[40,0]]);assert.equal(packets(ws).length,1);[...s.timeouts.values()].at(-1)();assert.equal(packets(ws).length,2);const b=new DataView(ws.sent.at(-1));assert.equal(b.getFloat32(1,true),28);});
-const tapKey=(s,key,area='keyboard')=>s.element(area).handlers.click({target:{closest:()=>({dataset:{key:String(key)}})}});
+const tapKey=(s,key,area='keyboard',shift=false)=>s.element(area).handlers.click({target:{closest:()=>({dataset:{key:String(key),shift:String(shift)}})}});
 test('tap drag flushes all selected-text motion before button release',()=>{
  const s=start(),ws=ready(s);touch(s,'touchstart',[[100,100]]);touch(s,'touchend',[]);
  touch(s,'touchstart',[[100,100]]);touch(s,'touchmove',[[120,110]]);
@@ -51,33 +51,57 @@ test('keyboard modifiers apply once, without holding remote keys between taps',(
  assert.equal(s.element('mod-ctrl').attrs['aria-pressed'],'false');
  tapKey(s,6);assert.deepEqual(packets(ws).at(-1),[11,6]);
 });
-test('Super and Shift combine for one workspace shortcut and can be disarmed',()=>{
- const s=start(),ws=ready(s);s.element('key-super').onclick();s.element('mod-shift').onclick();
- assert.deepEqual(packets(ws),[]);assert.equal(s.element('mod-super').attrs['aria-pressed'],'false');
- assert.equal(s.element('shortcut-help').textContent,'Super + Shift · tap a key');
- tapKey(s,32);assert.deepEqual(packets(ws),[[9,227],[9,225],[11,32],[10,225],[10,227]]);
- assert.equal(s.element('key-super').attrs['aria-pressed'],'false');assert.equal(s.element('mod-shift').attrs['aria-pressed'],'false');
- s.element('key-super').onclick();s.element('key-super').onclick();tapKey(s,40,'special-keys');
- assert.deepEqual(packets(ws).slice(5),[[11,40]]);
+const holdSuper=(s,id='key-super',pointerId=1)=>s.element(id).handlers.pointerdown({preventDefault(){},pointerId,pointerType:'touch'});
+const liftSuper=(s,id='key-super',pointerId=1)=>s.element(id).handlers.pointerup({pointerId});
+test('keyboard Super stays held across shortcuts and releases on lift',()=>{
+ const s=start(),ws=ready(s);holdSuper(s);s.element('mod-shift').onclick();
+ assert.deepEqual(packets(ws),[[9,227]]);assert.equal(s.element('mod-super').attrs['aria-pressed'],'true');
+ assert.equal(s.element('shortcut-help').textContent,'Super held + Shift · tap a key');
+ tapKey(s,32);assert.deepEqual(packets(ws),[[9,227],[9,225],[11,32],[10,225]]);
+ assert.equal(s.element('key-super').attrs['aria-pressed'],'true');assert.equal(s.element('mod-shift').attrs['aria-pressed'],'false');
+ tapKey(s,40,'special-keys');assert.deepEqual(packets(ws).at(-1),[11,40]);
+ liftSuper(s);assert.deepEqual(packets(ws).at(-1),[10,227]);
+ assert.equal(s.element('key-super').attrs['aria-pressed'],'false');
+ tapKey(s,6);assert.deepEqual(packets(ws).at(-1),[11,6]);
 });
-test('Super works with special keys as well as the letter grid',()=>{
- const s=start(),ws=ready(s);s.element('key-super').onclick();tapKey(s,40,'special-keys');
+test('keyboard Super preserves modifiers selected before holding it',()=>{
+ const s=start(),ws=ready(s);s.element('mod-ctrl').onclick();s.element('mod-alt').onclick();holdSuper(s);
+ tapKey(s,40,'special-keys');liftSuper(s);
+ assert.deepEqual(packets(ws),[[9,227],[9,224],[9,226],[11,40],[10,226],[10,224],[10,227]]);
+});
+for (const end of ['pointerup','pointercancel','lostpointercapture']) test(`keyboard Super releases on ${end} without a shortcut`,()=>{
+ const s=start(),ws=ready(s);holdSuper(s);s.element('key-super').handlers[end]({pointerId:1});
+ assert.deepEqual(packets(ws),[[9,227],[10,227]]);
+ assert.equal(s.element('key-super').attrs['aria-pressed'],'false');
+});
+test('both Super controls share a hold until the last finger lifts',()=>{
+ const s=start(),ws=ready(s);holdSuper(s);holdSuper(s,'mod-super',2);liftSuper(s);
+ s.element('key-super').handlers.lostpointercapture({pointerId:1});
+ assert.deepEqual(packets(ws),[[9,227]]);assert.equal(s.element('key-super').attrs['aria-pressed'],'true');
+ liftSuper(s,'mod-super',2);assert.deepEqual(packets(ws),[[9,227],[10,227]]);
+});
+for (const key of [' ','Enter']) test(`keyboard Super supports holding ${JSON.stringify(key)} and releases on blur`,()=>{
+ const s=start(),ws=ready(s),button=s.element('key-super');
+ button.handlers.keydown({key,preventDefault(){}});button.handlers.keydown({key,repeat:true,preventDefault(){}});
+ tapKey(s,40,'special-keys');button.handlers.keyup({key,preventDefault(){}});
  assert.deepEqual(packets(ws),[[9,227],[11,40],[10,227]]);
+ button.handlers.keydown({key,preventDefault(){}});button.handlers.blur();
+ assert.deepEqual(packets(ws).slice(-2),[[9,227],[10,227]]);
 });
-for (const target of ['keyboard-close','settings-open','disconnect']) test(`${target} clears pending shortcuts`,()=>{
- const s=start(),ws=ready(s);s.element('key-super').onclick();s.element('mod-alt').onclick();s.element(target).onclick();
+for (const target of ['keyboard-close','settings-open','disconnect']) test(`${target} releases held Super and clears pending shortcuts`,()=>{
+ const s=start(),ws=ready(s);holdSuper(s);s.element('mod-alt').onclick();s.element(target).onclick();
  assert.deepEqual(packets(ws).at(-1),[7]);
  assert.equal(s.element('key-super').attrs['aria-pressed'],'false');assert.equal(s.element('mod-alt').attrs['aria-pressed'],'false');
 });
-test('lost connection discards pending shortcuts before reconnecting',()=>{
- const s=start(),ws=ready(s);s.element('key-super').onclick();ws.readyState=3;ws.onclose();
- assert.equal(s.element('key-super').attrs['aria-pressed'],'false');assert.deepEqual(packets(ws),[]);
+test('lost connection discards held Super and pending shortcuts before reconnecting',()=>{
+ const s=start(),ws=ready(s);holdSuper(s);s.element('mod-alt').onclick();ws.readyState=3;ws.onclose();
+ assert.equal(s.element('key-super').attrs['aria-pressed'],'false');assert.equal(s.element('mod-alt').attrs['aria-pressed'],'false');
+ assert.deepEqual(packets(ws),[[9,227]]);
 });
 test('touchpad Super clears a pending keyboard shortcut and releases normally',()=>{
- const s=start(),ws=ready(s);s.element('key-super').onclick();s.element('mod-shift').onclick();
- const button=s.element('mod-super');button.handlers.pointerdown({preventDefault(){},pointerId:1,pointerType:'touch'});
- assert.equal(s.element('key-super').attrs['aria-pressed'],'false');assert.equal(s.element('mod-shift').attrs['aria-pressed'],'false');
- button.handlers.pointerup({pointerId:1});assert.deepEqual(packets(ws),[[9,227],[10,227]]);
+ const s=start(),ws=ready(s);s.element('mod-shift').onclick();holdSuper(s,'mod-super');
+ assert.equal(s.element('key-super').attrs['aria-pressed'],'true');assert.equal(s.element('mod-shift').attrs['aria-pressed'],'false');
+ liftSuper(s,'mod-super');assert.deepEqual(packets(ws),[[9,227],[10,227]]);
 });
 test('three-finger tap never latches Super',()=>{const s=start(),ws=ready(s);touch(s,'touchstart',[[0,0],[20,0],[40,0]]);touch(s,'touchend',[]);assert.deepEqual(packets(ws),[]);});
 test('Super release during resize releases the button before the modifier',()=>{const s=start(),ws=ready(s);const button=s.element('mod-super');button.handlers.pointerdown({preventDefault(){},pointerId:1});touch(s,'touchstart',[[0,0],[20,0]]);touch(s,'touchmove',[[10,10],[30,10]]);button.handlers.pointercancel({pointerId:1});assert.deepEqual(packets(ws).slice(-2),[[13],[10,227]]);touch(s,'touchmove',[[20,20],[40,20]]);touch(s,'touchend',[]);assert.deepEqual(packets(ws).slice(-2),[[13],[10,227]]);assert.equal(button.attrs['aria-pressed'],'false');});
@@ -85,7 +109,7 @@ test('native realtime typing sends text and local deletion sends Backspace',()=>
 test('native input rejects unsupported text without sending a partial word',()=>{const s=start(),ws=ready(s),input=s.element('native-input');input.value='Hello 日本';input.handlers.input();assert.deepEqual(packets(ws),[]);assert.match(s.element('typing-help').textContent,/US keyboard/);});
 test('composition is sent once after commit',()=>{const s=start(),ws=ready(s),input=s.element('native-input');input.handlers.compositionstart();input.value='test';input.handlers.input();assert.deepEqual(packets(ws),[]);input.handlers.compositionend();input.handlers.input();assert.deepEqual(packets(ws),[[14,116,101,115,116]]);});
 test('phone keyboard mode focuses the field and sends text immediately',()=>{const s=start(),ws=ready(s);s.element('native-mode').onclick();const input=s.element('native-input');input.value='Hello';input.handlers.input();assert.deepEqual(packets(ws).at(-1),[14,72,101,108,108,111]);});
-test('native focus releases modifiers before plain typing',()=>{const s=start(),ws=ready(s);s.element('key-super').onclick();s.element('mod-ctrl').onclick();s.element('native-input').focus();assert.equal(s.element('key-super').attrs['aria-pressed'],'false');assert.deepEqual(packets(ws).at(-1),[7]);assert.equal(s.element('mod-ctrl').attrs['aria-pressed'],'false');});
+test('native focus releases modifiers before plain typing',()=>{const s=start(),ws=ready(s);holdSuper(s);s.element('mod-ctrl').onclick();s.element('native-input').focus();assert.equal(s.element('key-super').attrs['aria-pressed'],'false');assert.deepEqual(packets(ws).at(-1),[7]);assert.equal(s.element('mod-ctrl').attrs['aria-pressed'],'false');});
 
 test('pinch sends absolute native scale and flushes its final sample before ending',()=>{
  const s=start(),ws=ready(s);touch(s,'touchstart',[[100,100],[200,100]]);
@@ -115,4 +139,56 @@ test('initial pinch drift sends only native zoom packets, with no wheel scroll',
  touch(s,'touchmove',[[100,108],[200,108]]);assert.deepEqual(packets(ws),[]);
  touch(s,'touchmove',[[90,108],[210,108]]);touch(s,'touchmove',[[80,130],[220,130]]);touch(s,'touchend',[]);
  assert.deepEqual(packets(ws).map(p=>p[0]),[15,15,16]);
+});
+
+function stripTouch(s,type,points) {
+ const target=s.element('scroll-zone');target.closest=selector=>selector==='#scroll-zone'?target:null;
+ s.element('pad').handlers[type]({preventDefault(){},target,touches:points.map(([clientX,clientY],identifier)=>({identifier,clientX,clientY,target}))});
+}
+test('one-finger strip scrolling matches two-finger scroll packets in both axes',()=>{
+ const a=start(),aw=ready(a),b=start(),bw=ready(b);
+ stripTouch(a,'touchstart',[[350,100]]);stripTouch(a,'touchmove',[[355,140]]);stripTouch(a,'touchend',[]);
+ touch(b,'touchstart',[[100,100],[200,100]]);touch(b,'touchmove',[[105,140],[205,140]]);touch(b,'touchend',[]);
+ assert.deepEqual(packets(aw),packets(bw));assert.deepEqual(packets(aw).map(p=>p[0]),[2]);
+});
+test('strip uses natural scrolling and scroll speed independently of pointer sensitivity',()=>{
+ const s=start(),ws=ready(s);s.element('natural').checked=false;s.element('sensitivity').value='3';
+ s.element('scroll-presets').handlers.click({target:{closest:()=>({dataset:{speed:'1.6'}})}});
+ stripTouch(s,'touchstart',[[350,100]]);stripTouch(s,'touchmove',[[360,125]]);stripTouch(s,'touchend',[]);
+ const p=new DataView(ws.sent.at(-1));assert.equal(p.getUint8(0),2);assert.equal(p.getFloat32(1,true),16);assert.equal(p.getFloat32(5,true),40);
+});
+test('tapping or holding the strip never clicks or begins a drag',()=>{
+ const s=start(),ws=ready(s);stripTouch(s,'touchstart',[[350,100]]);stripTouch(s,'touchmove',[[350,103]]);
+ assert.equal(s.timeouts.size,0);stripTouch(s,'touchend',[]);assert.deepEqual(packets(ws),[]);
+});
+test('strip flushes accumulated movement on lift without a trailing click',()=>{
+ const s=start(),ws=ready(s);stripTouch(s,'touchstart',[[350,100]]);stripTouch(s,'touchmove',[[350,120]]);
+ stripTouch(s,'touchmove',[[350,140]]);stripTouch(s,'touchmove',[[350,160]]);stripTouch(s,'touchend',[]);
+ assert.deepEqual(packets(ws).map(p=>p[0]),[2,2]);assert.equal(new DataView(ws.sent.at(-1)).getFloat32(5,true),-40);
+ assert.equal(s.timeouts.size,0);
+});
+test('adding a finger stops strip scrolling until all fingers lift',()=>{
+ const s=start(),ws=ready(s);stripTouch(s,'touchstart',[[350,100]]);stripTouch(s,'touchmove',[[350,120]]);
+ stripTouch(s,'touchstart',[[350,120],[350,160]]);stripTouch(s,'touchmove',[[350,140],[350,180]]);
+ stripTouch(s,'touchend',[[350,140]]);stripTouch(s,'touchmove',[[350,160]]);stripTouch(s,'touchend',[]);
+ assert.deepEqual(packets(ws).map(p=>p[0]),[2]);
+ touch(s,'touchstart',[[100,100]]);touch(s,'touchend',[]);assert.deepEqual(packets(ws).at(-1),[3]);
+});
+test('canceled strip scrolling discards pending motion and releases input',()=>{
+ const s=start(),ws=ready(s);stripTouch(s,'touchstart',[[350,100]]);stripTouch(s,'touchmove',[[350,120]]);stripTouch(s,'touchmove',[[350,140]]);
+ s.element('pad').handlers.touchcancel();assert.deepEqual(packets(ws).map(p=>p[0]),[2,7]);assert.equal(s.timeouts.size,0);
+});
+test('dedicated plus sends Shift and equals, then leaves equals unmodified',()=>{
+ const s=start(),ws=ready(s);tapKey(s,46,'keyboard',true);tapKey(s,46);
+ assert.deepEqual(packets(ws),[[9,225],[11,46],[10,225],[11,46]]);
+});
+test('plus combines with Ctrl and deduplicates an armed Shift',()=>{
+ const s=start(),ws=ready(s);s.element('mod-ctrl').onclick();s.element('mod-shift').onclick();tapKey(s,46,'keyboard',true);
+ assert.deepEqual(packets(ws),[[9,224],[9,225],[11,46],[10,225],[10,224]]);
+ assert.equal(s.element('mod-shift').attrs['aria-pressed'],'false');assert.equal(s.element('mod-ctrl').attrs['aria-pressed'],'false');
+});
+test('plus preserves held Super until the finger lifts',()=>{
+ const s=start(),ws=ready(s);holdSuper(s);tapKey(s,46,'keyboard',true);
+ assert.deepEqual(packets(ws),[[9,227],[9,225],[11,46],[10,225]]);
+ assert.equal(s.element('key-super').attrs['aria-pressed'],'true');liftSuper(s);assert.deepEqual(packets(ws).at(-1),[10,227]);
 });

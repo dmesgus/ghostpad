@@ -12,3 +12,18 @@ body.keyboard-open .grabber{min-height:18px}
 body.keyboard-open.compact-keyboard #pad,body.keyboard-open.compact-keyboard .dock,body.keyboard-open.compact-keyboard .grabber{display:none}
 body.keyboard-open.compact-keyboard #keyboard-panel{flex:1}
 @media(max-height:500px){body.keyboard-open #pad,body.keyboard-open .dock,body.keyboard-open .grabber{display:none}body.keyboard-open #keyboard-panel{flex:1}}
+
+#key-super{touch-action:none;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
+
+#pad{--thumb-height:80px}
+#scroll-zone{position:absolute;top:58px;bottom:var(--thumb-height);right:0;width:44px;overflow:hidden;border-left:1px solid #cdcdd6;background:#ffffff26;touch-action:none;display:flex;align-items:center;justify-content:center;color:#93939e}
+#scroll-zone::before{content:"";position:absolute;width:3px;top:24px;bottom:24px;border-radius:3px;background:#c6c6d0}
+#scroll-zone span{position:relative;background:#dcdce4;border-radius:12px;padding:10px 4px;font-size:16px;pointer-events:none}
+#scroll-zone.active{background:#d9edff;color:#1677c6}
+#scroll-zone.active::before{background:#8ccaff}
+#scroll-zone.active span{background:#d9edff}
+#pad.scroll-left #scroll-zone{left:0;right:auto;border-left:0;border-right:1px solid #cdcdd6}
+.setting-card .scroll-side-label{margin-top:16px;color:#555562}
+body.keyboard-open #pad{--thumb-height:54px}
+@media(max-height:500px){#pad{--thumb-height:54px}}
+body.settings-open .surface-label{display:none}

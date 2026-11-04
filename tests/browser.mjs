@@ -47,14 +47,35 @@ try {
  for(const opcode of [1,2,3,4,5,6])assert(packets.some(p=>p[0]===opcode),`Missing opcode ${opcode}`);
  let from=packets.length;
  await touch('touchStart',[[120,250]]);await touch('touchEnd',[]);
- await touch('touchStart',[[120,250]]);await touch('touchMove',[[150,270]]);
+ await touch('touchStart',[[220,350]]);await touch('touchMove',[[250,370]]);
  assert.equal(await page.locator('#drag-state').isVisible(),true);
- await touch('touchMove',[[175,310]]);await touch('touchEnd',[]);await page.waitForTimeout(50);
+ await touch('touchMove',[[275,410]]);await touch('touchEnd',[]);await page.waitForTimeout(50);
  let dragPackets=packets.slice(from).filter(p=>p[0]!==8);
  assert.deepEqual(dragPackets.slice(0,2).map(p=>p[0]),[3,5],'Tap drag must press before moving');
  assert(dragPackets.slice(2,-1).length>0&&dragPackets.slice(2,-1).every(p=>p[0]===1),'Dragging must only move the held pointer');
  assert.equal(dragPackets.at(-1)[0],6,'Lifting must release without another click');
  assert.equal(await page.locator('#drag-state').isVisible(),false);
+ // Apply the transmitted button/motion sequence to real selectable browser text.
+ const desktop=await browser.newContext({viewport:{width:900,height:500}});
+ const textPage=await desktop.newPage();
+ await textPage.setContent('<p style="margin:40px;font:20px monospace;width:700px">Select these words by double tapping and dragging across the text.</p>');
+ let mx=55,my=58,clickCount=0;
+ await textPage.mouse.move(mx,my);
+ for(const packet of dragPackets) {
+  if(packet[0]===3)await textPage.mouse.click(mx,my,{clickCount:++clickCount});
+  if(packet[0]===5)await textPage.mouse.down({clickCount:++clickCount});
+  if(packet[0]===1) {
+   const view=new DataView(Uint8Array.from(packet).buffer);
+   mx+=view.getFloat32(1,true);my+=view.getFloat32(5,true);
+   await textPage.mouse.move(mx,my);
+  }
+  if(packet[0]===6)await textPage.mouse.up({clickCount});
+ }
+ const selection=await textPage.evaluate(()=>getSelection().toString());
+ assert(selection.includes('Select these words'),'Tap drag must extend text selection beyond the initial word');
+ await textPage.mouse.move(800,400);
+ assert.equal(await textPage.evaluate(()=>getSelection().toString()),selection,'Selection must remain after the finger lifts');
+ await desktop.close();
  from=packets.length;
  await touch('touchStart',[[120,250]]);await touch('touchEnd',[]);
  await touch('touchStart',[[120,250]]);await touch('touchEnd',[]);await page.waitForTimeout(50);
@@ -76,6 +97,28 @@ try {
  assert(gesture.some(p=>p[0]===15),'Pinch updates missing');
  assert(gesture.every(p=>p[0]===15||p[0]===16),'Drifting during a pinch must not send scroll, pointer, or click packets');
  assert.equal(gesture.at(-1)[0],16);
+ // The strip shares two-finger scroll deltas and keeps its starting gesture across boundaries.
+ const stripBox=await page.locator('#scroll-zone').boundingBox();
+ const sx=stripBox.x+stripBox.width/2,sy=stripBox.y+stripBox.height/2;
+ assert.equal(await page.locator('#pad').evaluate(el=>el.classList.contains('scroll-left')),false,'Strip defaults to the right');
+ assert(stripBox.width>=44&&stripBox.height>=100,'Scroll strip must be an accessible touch target');
+ from=packets.length;
+ await touch('touchStart',[[sx,sy]]);await touch('touchMove',[[sx,sy+40]]);await touch('touchEnd',[]);await page.waitForTimeout(50);
+ const stripPackets=packets.slice(from).filter(p=>p[0]!==8);
+ assert.deepEqual(stripPackets.map(p=>p[0]),[2]);
+ from=packets.length;
+ await touch('touchStart',[[120,250],[190,250]]);await touch('touchMove',[[120,290],[190,290]]);await touch('touchEnd',[]);await page.waitForTimeout(50);
+ assert.deepEqual(stripPackets,packets.slice(from).filter(p=>p[0]!==8),'Strip must match two-finger scrolling');
+ from=packets.length;
+ await touch('touchStart',[[sx,sy]]);await touch('touchEnd',[]);
+ await touch('touchStart',[[sx,sy]]);await page.waitForTimeout(450);await touch('touchEnd',[]);await page.waitForTimeout(50);
+ assert.deepEqual(packets.slice(from).filter(p=>p[0]!==8),[],'Strip taps and holds must not click');
+ from=packets.length;
+ await touch('touchStart',[[sx,sy]]);await touch('touchMove',[[sx-80,sy+40]]);await touch('touchEnd',[]);await page.waitForTimeout(50);
+ assert.deepEqual(packets.slice(from).filter(p=>p[0]!==8).map(p=>p[0]),[2],'Leaving the strip must keep scrolling');
+ from=packets.length;
+ await touch('touchStart',[[sx-80,sy]]);await touch('touchMove',[[sx,sy+40]]);await touch('touchEnd',[]);await page.waitForTimeout(50);
+ assert.deepEqual(packets.slice(from).filter(p=>p[0]!==8).map(p=>p[0]),[1],'Crossing into the strip must keep moving the pointer');
  const padBox=await page.locator('#pad').boundingBox();
  for(const id of ['mod-super','right-click']) {
   const box=await page.locator(`#${id}`).boundingBox();
@@ -102,26 +145,52 @@ try {
  gesture=packets.slice(from).filter(p=>p[0]!==8);
  assert.deepEqual(gesture.map(p=>p[0]),[9,5,1,6,10]);
  await page.locator('#keyboard-toggle').click();
- // Each tap uses one finger; the phone keyboard never needs simultaneous modifier touches.
+ // Hold keyboard Super with one finger, then use shortcut keys with another.
  await page.locator('#native-input').focus();
+ const center=async selector=>{const b=await page.locator(selector).boundingBox();return [b.x+b.width/2,b.y+b.height/2];};
+ const keySuperPoint=await center('#key-super');
  from=packets.length;
- await page.locator('#key-super').tap();
+ await touch('touchStart',[keySuperPoint]);
  assert.equal(await page.locator('#keyboard').isVisible(),true,'Super should reveal the key grid');
  assert.equal(await page.locator('#native-input').evaluate(el=>document.activeElement===el),false);
- await page.locator('#mod-shift').tap();
- assert.deepEqual(packets.slice(from).filter(p=>p[0]!==8),[],'Arming shortcuts must not hold remote modifiers');
- await page.locator('#keyboard button[data-key="32"]').tap();await page.waitForTimeout(50);
- assert.deepEqual(packets.slice(from).filter(p=>p[0]!==8),[[9,227],[9,225],[11,32],[10,225],[10,227]]);
- for(const id of ['key-super','mod-shift']) assert.equal(await page.locator(`#${id}`).getAttribute('aria-pressed'),'false');
+ assert.equal(await page.locator('#key-super').getAttribute('aria-pressed'),'true');
+ const tapWhileHolding=async selector=>{
+  const [x,y]=await center(selector);
+  await touch('touchStart',[keySuperPoint,[x,y]]);
+  await cdp.send('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[{x,y,id:1}]});
+ };
+ await tapWhileHolding('#mod-shift');
+ await tapWhileHolding('#keyboard button[data-key="32"]');await page.waitForTimeout(50);
+ assert.deepEqual(packets.slice(from).filter(p=>p[0]!==8),[[9,227],[9,225],[11,32],[10,225]]);
+ assert.equal(await page.locator('#key-super').getAttribute('aria-pressed'),'true');
+ assert.equal(await page.locator('#mod-shift').getAttribute('aria-pressed'),'false');
+ await tapWhileHolding('#special-keys button[data-key="40"]');await page.waitForTimeout(50);
+ assert.deepEqual(packets.slice(from).filter(p=>p[0]!==8).at(-1),[11,40]);
+ await touch('touchEnd',[]);await page.waitForTimeout(50);
+ assert.deepEqual(packets.slice(from).filter(p=>p[0]!==8).at(-1),[10,227]);
+ assert.equal(await page.locator('#key-super').getAttribute('aria-pressed'),'false');
  from=packets.length;
  await page.locator('#keyboard button[data-key="32"]').tap();await page.waitForTimeout(50);
  assert.deepEqual(packets.slice(from).filter(p=>p[0]!==8),[[11,32]],'Next key must be unmodified');
  from=packets.length;
- await page.locator('#key-super').tap();await page.locator('#special-keys button[data-key="40"]').tap();await page.waitForTimeout(50);
- assert.deepEqual(packets.slice(from).filter(p=>p[0]!==8),[[9,227],[11,40],[10,227]]);
+ const [keyX,keyY]=await center('#keyboard button[data-key="32"]');
+ await touch('touchStart',[[keyX,keyY]]);
+ await touch('touchMove',[[keyX,keyY+18]]);await touch('touchMove',[[keyX,keyY]]);
+ await touch('touchEnd',[]);
+ await touch('touchStart',[[keyX,keyY]]);await touch('touchCancel',[]);await page.waitForTimeout(50);
+ assert.deepEqual(packets.slice(from).filter(p=>p[0]!==8),[],'Moving or canceling a key touch must not type');
+ from=packets.length;
+ await page.locator('#key-super').tap();await page.waitForTimeout(50);
+ assert.deepEqual(packets.slice(from).filter(p=>p[0]!==8),[[9,227],[10,227]],'A Super tap must release immediately');
  from=packets.length;
  await page.locator('#mod-ctrl').tap();await page.locator('#keyboard button[data-key="6"]').tap();await page.waitForTimeout(50);
  assert.deepEqual(packets.slice(from).filter(p=>p[0]!==8),[[9,224],[11,6],[10,224]]);
+ from=packets.length;
+ await page.locator('#keyboard button[data-shift="true"]').tap();await page.waitForTimeout(50);
+ assert.deepEqual(packets.slice(from).filter(p=>p[0]!==8),[[9,225],[11,46],[10,225]],'Plus must type Shift+equals');
+ from=packets.length;
+ await page.locator('#mod-ctrl').tap();await page.locator('#keyboard button[data-shift="true"]').tap();await page.waitForTimeout(50);
+ assert.deepEqual(packets.slice(from).filter(p=>p[0]!==8),[[9,224],[9,225],[11,46],[10,225],[10,224]],'Ctrl+Plus must preserve the shortcut');
  await mkdir(new URL('artifacts/',root),{recursive:true});
  await page.screenshot({path:new URL('artifacts/keyboard-shortcuts.png',root).pathname});
  const fullyVisible=async selector=>page.locator(selector).evaluateAll(elements=>elements.every(el=>{
@@ -137,9 +206,10 @@ try {
  assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
  await page.screenshot({path:new URL('artifacts/keyboard-small.png',root).pathname});
  await page.setViewportSize({width:390,height:844});
- await page.locator('#key-super').tap();
+ await touch('touchStart',[await center('#key-super')]);
  await page.locator('#native-mode').click();
- assert.equal(await page.locator('#key-super').getAttribute('aria-pressed'),'false','Phone typing must clear armed Super');
+ await touch('touchEnd',[]);
+ assert.equal(await page.locator('#key-super').getAttribute('aria-pressed'),'false','Phone typing must release held Super');
  await page.waitForTimeout(100);
  assert(packets.some(p=>p[0]===9&&p[1]===227),'Super key-down missing');
  assert(packets.some(p=>p[0]===12),'Resize right-down missing');
@@ -166,10 +236,21 @@ try {
  assert.equal(await page.locator('#settings').evaluate(d=>d.open),true);
  await page.locator('#sensitivity').evaluate(el=>{el.value='2';el.dispatchEvent(new Event('input'));});
  assert.equal(await page.locator('#sensitivity-value').textContent(),'2.0×');
+ assert.equal(await page.locator('#scroll-side button[data-side="right"]').getAttribute('aria-pressed'),'true');
+ await page.locator('#scroll-side button[data-side="left"]').tap();
+ assert.equal(await page.evaluate(()=>localStorage.getItem('ghostpad.scrollSide')),'left');
+ assert.equal(await page.locator('#scroll-side button[data-side="left"]').getAttribute('aria-pressed'),'true');
  await page.screenshot({path:new URL('artifacts/settings.png',root).pathname});
  await page.locator('#settings-close').click();await page.reload();
  await page.waitForFunction(()=>document.getElementById('status').textContent==='Preview');
  assert.equal(await page.locator('#sensitivity').inputValue(),'2');
+ assert.equal(await page.locator('#scroll-side button[data-side="left"]').getAttribute('aria-pressed'),'true','Side preference must survive reload');
+ const leftBox=await page.locator('#scroll-zone').boundingBox(),reloadedPad=await page.locator('#pad').boundingBox();
+ assert(Math.abs(leftBox.x-reloadedPad.x)<=2,'Strip must move to the left edge');
+ from=packets.length;
+ await touch('touchStart',[[leftBox.x+22,250]]);await touch('touchMove',[[leftBox.x+22,290]]);await touch('touchEnd',[]);await page.waitForTimeout(50);
+ assert.deepEqual(packets.slice(from).filter(p=>p[0]!==8),stripPackets,'Left strip must scroll identically');
+ await page.screenshot({path:new URL('artifacts/phone-scroll-left.png',root).pathname});
  await page.locator('#settings-open').click();await page.locator('#disconnect').click();
  assert.equal(await page.locator('#status').textContent(),'Disconnected');
  await page.locator('#disconnect').click();await page.waitForFunction(()=>document.getElementById('status').textContent==='Preview');

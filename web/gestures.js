@@ -43,8 +43,9 @@ export class Gestures {
             this.reset();
             this.began = time;
             this.windowMode = this.superHeld();
-            // A nearby second touch within 300 ms can continue the tap as a drag.
-            this.tapDrag = !this.windowMode && count === 1 && tap !== null && time >= tap.time && time - tap.time <= 300 && Math.hypot(points[0].x - tap.point.x, points[0].y - tap.point.y) <= 40;
+            // This is a relative touchpad: landing elsewhere does not move the cursor.
+            // A second touch within 300 ms can continue the tap as a drag anywhere.
+            this.tapDrag = !this.windowMode && count === 1 && tap !== null && time >= tap && time - tap <= 300;
         }
         // Preserve a short, deliberate swipe that ends during the decision window.
         if (count < 2 && this.count === 2 && !this.twoMode && !this.suppressed && !this.windowMode && this.twoStart && this.last) {
@@ -59,10 +60,10 @@ export class Gestures {
             let tap = null;
             if (this.dragging || this.twoMode === 'zoom')
                 this.release();
-            else if (!this.consumed && time - this.began < 300 && this.travel < 9 && this.max <= 2) {
+            else if (!this.consumed && time - this.began < 300 && (this.tapDrag || this.travel < 9) && this.max <= 2) {
                 this.emit({ type: this.max === 2 ? 'right' : 'left' });
-                if (this.max === 1 && !this.windowMode && this.last)
-                    tap = { point: this.last, time };
+                if (this.max === 1 && !this.windowMode)
+                    tap = time;
             }
             this.reset();
             this.lastTap = tap;
@@ -138,7 +139,7 @@ export class Gestures {
                     // two-finger gesture cannot accidentally press the left button.
                     this.tapDelta.x += dx;
                     this.tapDelta.y += dy;
-                    if (this.travel >= 3) {
+                    if (Math.hypot(this.tapDelta.x, this.tapDelta.y) >= 3) {
                         this.tapDrag = false;
                         this.dragging = this.consumed = true;
                         this.emit({ type: 'down' });
@@ -154,7 +155,7 @@ export class Gestures {
         this.count = count;
     }
     hold(time) {
-        if (!this.windowMode && this.count === 1 && this.max === 1 && this.travel < 7 && !this.suppressed && !this.dragging && time - this.began >= 380) {
+        if (!this.windowMode && this.count === 1 && this.max === 1 && (this.tapDrag || this.travel < 7) && !this.suppressed && !this.dragging && time - this.began >= 380) {
             this.tapDrag = false;
             this.dragging = this.consumed = true;
             this.emit({ type: 'down' });

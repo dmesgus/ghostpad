@@ -32,10 +32,32 @@ test('tap drag buffers jitter and retains the entire initial movement',()=>{
  assert.deepEqual(events,[{type:'left'}]);g.update([p(103,104)],120);g.update([],150);
  assert.deepEqual(events,[{type:'left'},{type:'down'},{type:'move',dx:3,dy:4},{type:'up'}]);
 });
-test('late or distant second touches move normally',()=>{
- for(const [point,time] of [[p(100,100),351],[p(141,100),100]]) {
+test('late second touches move normally',()=>{
+ for(const [point,time] of [[p(100,100),351],[p(200,200),351]]) {
   const {g,events}=setup();firstTap(g);g.update([point],time);g.update([p(point.x+20,point.y)],time+20);g.update([],time+50);
   assert.deepEqual(events,[{type:'left'},{type:'move',dx:20,dy:0}]);
+ }
+});
+test('tap drag follows the cursor even when the second touch lands elsewhere on the pad',()=>{
+ const {g,events}=setup();firstTap(g);g.update([p(220,300)],150);
+ g.update([p(240,310)],170);g.update([],200);
+ assert.deepEqual(events,[{type:'left'},{type:'down'},{type:'move',dx:20,dy:10},{type:'up'}]);
+});
+test('back-and-forth jitter on the second tap does not start a drag or lose the click',()=>{
+ const {g,events}=setup();firstTap(g);g.update([p(100,100)],100);
+ for(let i=0;i<12;i++)g.update([p(100+i%2,100)],110+i*5);
+ g.update([],200);
+ assert.deepEqual(events,[{type:'left'},{type:'left'}]);
+});
+test('second-touch jitter still permits holding or sliding to select',()=>{
+ for(const hold of [false,true]) {
+  const {g,events}=setup();firstTap(g);g.update([p(200,200)],100);
+  for(let i=0;i<12;i++)g.update([p(200+i%2,200)],110+i*5);
+  assert.deepEqual(events,[{type:'left'}]);
+  if(hold)g.hold(500);
+  g.update([p(220,200)],520);g.update([],550);
+  assert.deepEqual(events.map(e=>e.type),hold?['left','down','move','move','up']:['left','down','move','up']);
+  assert.equal(events.filter(e=>e.type==='move').reduce((sum,e)=>sum+e.dx,0),20);
  }
 });
 test('a second touch at the tap timeout boundary can drag',()=>{
@@ -70,9 +92,9 @@ test('intervening gestures and completed drags clear tap history',()=>{
  for(const mode of ['scroll','move','drag']) {
   const {g,events}=setup();firstTap(g);
   if(mode==='scroll') {g.update([p(100,100),p(200,100)],100);g.update([p(100,120),p(200,120)],120);}
-  else {g.update([p(mode==='move'?200:100,100)],100);g.update([p(220,100)],120);}
-  g.update([],140);events.length=0;
-  g.update([p(100,100)],160);g.update([p(120,100)],180);g.update([],200);
+  else {const time=mode==='move'?400:100;g.update([p(100,100)],time);g.update([p(220,100)],time+20);}
+  g.update([],450);events.length=0;
+  g.update([p(100,100)],470);g.update([p(120,100)],490);g.update([],510);
   assert.deepEqual(events,[{type:'move',dx:20,dy:0}]);
  }
 });
