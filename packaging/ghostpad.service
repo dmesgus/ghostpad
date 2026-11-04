@@ -1,0 +1,15 @@
+# Optional user service. First install the release binary in ~/.local/bin.
+# Requires /dev/uinput access before startup; see README.
+[Unit]
+Description=Ghostpad local wireless trackpad
+After=network-online.target
+
+[Service]
+ExecStart=%h/.local/bin/ghostpad
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+UMask=0077
+
+[Install]
+WantedBy=default.target
