@@ -48,13 +48,25 @@ let lastMotion = -Infinity, lastPing = 0;
 let padTouches = 0, ignorePad = false;
 let scrollTouch = null;
 const superPointers = new Set();
+const padSuperPointers = new Set();
+let superOrigin = { x: null, y: null };
+let lastSuperFill = '';
+function updateSuperFill() {
+    const active = modifiers.has('super') && (padSuperPointers.size > 0 || superKeys.has($('mod-super')));
+    const detail = { active, ...superOrigin };
+    const signature = JSON.stringify(detail);
+    if (signature === lastSuperFill)
+        return;
+    lastSuperFill = signature;
+    window.dispatchEvent(new CustomEvent('ghostpad-super-fill', { detail }));
+}
 const superKeys = new Set();
 let textTimer = 0, textQueue = [], previousText = '', composing = false;
 const modifiers = new Map();
 // Ctrl, Alt, and Shift apply to one shortcut; Super stays down while held.
 const shortcutModifiers = new Map();
 let hold = 0, frame = 0, pending = null;
-function status(label, detail, online = false) { $('status').textContent = label; $('detail').textContent = detail; $('dot').classList.toggle('online', online); document.body.classList.toggle('connected', online && label !== 'Preview'); if (!online)
+function status(label, detail, online = false) { $('status').textContent = label; $('detail').textContent = detail; $('dot').classList.toggle('online', online); document.body.classList.toggle('connected', online); if (!online)
     $('hint').textContent = detail; }
 function transmit(bytes) {
     if (!ready || (socket === null || socket === void 0 ? void 0 : socket.readyState) !== WebSocket.OPEN)
@@ -132,7 +144,7 @@ function action(a) {
 }
 const gestures = new Gestures(action, () => modifiers.has('super'));
 function resetScroll() { scrollTouch = null; scrollZone.classList.remove('active'); }
-function cancel() { stopText(); resetScroll(); superPointers.clear(); superKeys.clear(); padTouches = 0; ignorePad = false; clearTimeout(hold); clearTimeout(frame); frame = 0; pending = null; lastMotion = -Infinity; gestures.cancel(); send(7); modifiers.clear(); shortcutModifiers.clear(); updateModifiers(); pad.classList.remove('active'); $('drag-state').hidden = true; }
+function cancel() { stopText(); resetScroll(); superPointers.clear(); padSuperPointers.clear(); superKeys.clear(); padTouches = 0; ignorePad = false; clearTimeout(hold); clearTimeout(frame); frame = 0; pending = null; lastMotion = -Infinity; gestures.cancel(); send(7); modifiers.clear(); shortcutModifiers.clear(); updateModifiers(); pad.classList.remove('active'); $('drag-state').hidden = true; }
 for (const type of ['touchstart', 'touchmove', 'touchend']) {
     pad.addEventListener(type, (event) => {
         // Touches retain their original target when sliding across zone boundaries.
@@ -248,7 +260,6 @@ function connect() {
             const preview = e.data === 'ready:preview';
             status(preview ? 'Preview' : 'Connected', preview ? 'Preview mode. Gestures connect, but do not move the computer’s cursor.' : `Connected locally · ${location.protocol === 'https:' ? 'encrypted' : 'unencrypted, trusted Wi-Fi only'}`, true);
             $('hint').textContent = preview ? 'Connected in preview. Cursor control is off.' : 'Your desktop, at your fingertips.';
-            $('mode').textContent = preview ? 'PREVIEW · INPUT DISABLED' : 'LOCAL WI-FI · NO CLOUD';
             heartbeat = window.setInterval(() => { if (Date.now() - lastPong > 6000)
                 ws.close();
             else {
@@ -328,6 +339,7 @@ function updateModifiers() {
         names.unshift('Super held');
     $('shortcut-help').textContent = names.length ? `${names.join(' + ')} · tap a key` : 'Hold Super; lift to release. Tap Shift, Ctrl or Alt for one shortcut.';
     document.body.classList.toggle('super-held', modifiers.has('super'));
+    updateSuperFill();
     if (ready)
         $('hint').textContent = modifiers.has('super') ? 'Super held · 1 finger moves · 2 fingers resize' : 'Pinch to zoom · hold Super to move or resize windows.';
 }
@@ -368,7 +380,7 @@ function setSuper(down) {
     updateModifiers();
 }
 function releaseSuper() { if (!superPointers.size && !superKeys.size)
-    setSuper(false); }
+    setSuper(false); updateSuperFill(); }
 for (const id of ['mod-super', 'key-super']) {
     const button = $(id);
     function prepareSuper() {
@@ -380,9 +392,15 @@ for (const id of ['mod-super', 'key-super']) {
         updateModifiers();
     }
     button.addEventListener('pointerdown', event => {
+        var _a, _b;
         event.preventDefault();
         if (!ready || textQueue.length || (event.pointerType === 'mouse' && event.button !== 0))
             return;
+        if (id === 'mod-super') {
+            if (!padSuperPointers.size && !superKeys.has(button))
+                superOrigin = { x: (_a = event.clientX) !== null && _a !== void 0 ? _a : null, y: (_b = event.clientY) !== null && _b !== void 0 ? _b : null };
+            padSuperPointers.add(event.pointerId);
+        }
         superPointers.add(event.pointerId);
         button.setPointerCapture(event.pointerId);
         prepareSuper();
@@ -390,6 +408,7 @@ for (const id of ['mod-super', 'key-super']) {
     for (const event of ['pointerup', 'pointercancel', 'lostpointercapture'])
         button.addEventListener(event, event => {
             superPointers.delete(event.pointerId);
+            padSuperPointers.delete(event.pointerId);
             releaseSuper();
         });
     button.addEventListener('contextmenu', event => event.preventDefault());
@@ -398,6 +417,8 @@ for (const id of ['mod-super', 'key-super']) {
             event.preventDefault();
             if (!ready || textQueue.length || event.repeat)
                 return;
+            if (id === 'mod-super' && !padSuperPointers.size)
+                superOrigin = { x: null, y: null };
             superKeys.add(button);
             prepareSuper();
         }
@@ -492,6 +513,7 @@ nativeInput.addEventListener('focus', () => {
     modifiers.clear();
     shortcutModifiers.clear();
     superPointers.clear();
+    padSuperPointers.clear();
     superKeys.clear();
     updateModifiers();
 });

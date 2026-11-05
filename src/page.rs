@@ -9,6 +9,7 @@ pub fn page() -> &'static Page {
     static PAGE: OnceLock<Page> = OnceLock::new();
     PAGE.get_or_init(|| {
         let css = include_str!("../web/style.css");
+        let fill = include_str!("../web/super-fill.js");
         let boot = include_str!("../web/boot.js");
         let gestures =
             include_str!("../web/gestures.js").replace("export class Gestures", "class Gestures");
@@ -22,15 +23,17 @@ pub fn page() -> &'static Page {
                 "<link rel=\"stylesheet\" href=\"/style.css\">",
                 &format!("<style>{css}</style>"),
             )
+            .replace("<script src=\"/super-fill.js\"></script>", "")
             .replace(
                 "<script type=\"module\" src=\"/app.js\"></script>",
-                &format!("<script>{boot}</script><script>{script}</script>"),
+                &format!("<script>{boot}</script><script>{fill}</script><script>{script}</script>"),
             );
         let policy = format!(
-            "style-src 'self' 'sha256-{}'; script-src 'self' 'sha256-{}' 'sha256-{}'",
+            "style-src 'self' 'sha256-{}'; script-src 'self' 'sha256-{}' 'sha256-{}' 'sha256-{}'",
             crate::crypto::sha256(css.as_bytes()),
             crate::crypto::sha256(boot.as_bytes()),
-            crate::crypto::sha256(script.as_bytes())
+            crate::crypto::sha256(script.as_bytes()),
+            crate::crypto::sha256(fill.as_bytes())
         );
         Page { html, policy }
     })
@@ -40,20 +43,26 @@ mod tests {
     #[test]
     fn phone_boot_is_self_contained() {
         let page = super::page();
-        assert!(!page.html.contains("rel=\"stylesheet\""));
+        assert!(!page.html.contains("<link rel=\"stylesheet\""));
+        assert!(!page.html.contains("<script src=\"/super-fill.js\""));
         assert!(!page.html.contains("<script type=\"module\""));
         assert!(!page.html.contains("import { Gestures }"));
         assert!(!page.html.contains("export class"));
         assert!(page.html.contains("Tap to start typing"));
         assert!(page.html.contains("ghostpad-started"));
         for tag in ["script", "style"] {
-            for rest in page.html.split(&format!("<{tag}>")).skip(1) {
-                let content = rest.split_once(&format!("</{tag}>")).unwrap().0;
+            let mut rest = page.html.as_str();
+            let mut count = 0;
+            while let Some((_, body)) = rest.split_once(&format!("<{tag}>")) {
+                let (content, after) = body.split_once(&format!("</{tag}>")).unwrap();
+                rest = after;
+                count += 1;
                 assert!(
                     page.policy
                         .contains(&crate::crypto::sha256(content.as_bytes()))
                 );
             }
+            assert_eq!(count, if tag == "script" { 3 } else { 1 });
         }
     }
 }

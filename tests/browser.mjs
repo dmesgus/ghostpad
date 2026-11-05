@@ -15,13 +15,14 @@ try {
   if (!['index.html','style.css','app.js','gestures.js','text.js','icon.svg'].includes(name)) return route.fulfill({status:404});
   if (name === 'index.html') {
    const css=await readFile(new URL('web/style.css',root),'utf8'),boot=await readFile(new URL('web/boot.js',root),'utf8');
+   const fill=await readFile(new URL('web/super-fill.js',root),'utf8');
    const gestures=(await readFile(new URL('web/gestures.js',root),'utf8')).replace('export class Gestures','class Gestures');
    const text=(await readFile(new URL('web/text.js',root),'utf8')).replaceAll('export function','function');
    const app=(await readFile(new URL('web/app.js',root),'utf8')).replace("import { Gestures } from './gestures.js';",'').replace("import { textEdit, normalizeText } from './text.js';",'');
    const script=`(function () {\n${gestures}\n${text}\n${app}\n})();`;
-   const html=(await readFile(new URL('web/index.html',root),'utf8')).replace('<link rel="stylesheet" href="/style.css">',`<style>${css}</style>`).replace('<script type="module" src="/app.js"></script>',`<script>${boot}</script><script>${script}</script>`);
+   const html=(await readFile(new URL('web/index.html',root),'utf8')).replace('<link rel="stylesheet" href="/style.css">',()=>`<style>${css}</style>`).replace('<script src="/super-fill.js"></script>','').replace('<script type="module" src="/app.js"></script>',()=>`<script>${boot}</script><script>${fill}</script><script>${script}</script>`);
    const hash=s=>createHash('sha256').update(s).digest('base64');
-   return route.fulfill({contentType:'text/html',body:html,headers:{'Content-Security-Policy':`default-src 'self'; connect-src 'self' ws://ghostpad.test; style-src 'self' 'sha256-${hash(css)}'; script-src 'self' 'sha256-${hash(boot)}' 'sha256-${hash(script)}'`}});
+   return route.fulfill({contentType:'text/html',body:html,headers:{'Content-Security-Policy':`default-src 'self'; connect-src 'self' ws://ghostpad.test; style-src 'self' 'sha256-${hash(css)}'; script-src 'self' 'sha256-${hash(boot)}' 'sha256-${hash(script)}' 'sha256-${hash(fill)}'`}});
   }
   const type=name.endsWith('.js')?'text/javascript':name.endsWith('.css')?'text/css':name.endsWith('.svg')?'image/svg+xml':'text/html';
   await route.fulfill({contentType:type,body:await readFile(new URL(`web/${name}`,root))});
@@ -34,6 +35,13 @@ try {
  });
  await page.goto(`http://ghostpad.test/#key=${'a'.repeat(64)}`);
  await page.waitForFunction(()=>document.getElementById('status').textContent==='Preview');
+ await page.waitForSelector('#super-fill-root .origin-fill', {state:'attached'});
+ const fillActive=()=>page.locator('#super-fill-root .origin-fill').getAttribute('data-active');
+ const waitForFill=scale=>page.waitForFunction(expected=>{
+  const el=document.querySelector('#super-fill-root .origin-fill');
+  const transform=getComputedStyle(el).transform;
+  return Math.abs((transform==='none'?1:new DOMMatrixReadOnly(transform).a)-expected)<0.000001;
+ },scale);
  assert.equal(new URL(page.url()).hash,'');
  assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
  const cdp=await context.newCDPSession(page);
@@ -48,7 +56,7 @@ try {
  let from=packets.length;
  await touch('touchStart',[[120,250]]);await touch('touchEnd',[]);
  await touch('touchStart',[[220,350]]);await touch('touchMove',[[250,370]]);
- assert.equal(await page.locator('#drag-state').isVisible(),true);
+ assert.equal(await page.locator('#drag-state').evaluate(el=>el.hidden),false);
  await touch('touchMove',[[275,410]]);await touch('touchEnd',[]);await page.waitForTimeout(50);
  let dragPackets=packets.slice(from).filter(p=>p[0]!==8);
  assert.deepEqual(dragPackets.slice(0,2).map(p=>p[0]),[3,5],'Tap drag must press before moving');
@@ -125,17 +133,44 @@ try {
   assert(box.x>=padBox.x&&box.y>=padBox.y&&box.x+box.width<=padBox.x+padBox.width&&box.y+box.height<=padBox.y+padBox.height,'Thumb zone must be inside pad');
   assert(box.width>=100&&box.height>=44,'Thumb zone must be easy to reach');
  }
- assert.equal(await page.locator('#right-click').innerText(),'RC\nright-click');
+ assert.equal(await page.locator('#right-click').getAttribute('aria-label'),'Right-click');
+ assert.equal(await page.locator('#pad').innerText(),'','Pad must contain no visible labels');
+ assert.equal(padBox.x,0,'Pad must meet the left screen edge');
+ assert.equal(padBox.width,390,'Pad must use the full screen width');
+ assert.equal(padBox.y,0,'Pad must meet the top screen edge');
+ const assertBlankZones=async()=>assert.equal(await page.locator('#scroll-zone, .pad-zones, .pad-zone').evaluateAll(elements=>elements.every(el=>{
+  const style=getComputedStyle(el);
+  return style.backgroundColor==='rgba(0, 0, 0, 0)' && ['Top','Right','Bottom','Left'].every(side=>style[`border${side}Width`]==='0px');
+ })),true,'Touch zones must remain invisible, including while held');
+ await assertBlankZones();
  from=packets.length;
  await page.locator('#right-click').tap();await page.waitForTimeout(50);
  assert.deepEqual(packets.slice(from).filter(p=>p[0]!==8),[[4]],'RC touch must not become a pad tap');
+ assert.equal(await fillActive(),'false','Right-click must not activate the Super fill');
  const superBox=await page.locator('#mod-super').boundingBox();
  const superPoint=[superBox.x+superBox.width/2,superBox.y+superBox.height/2];
  await touch('touchStart',[superPoint]);
+ await page.waitForFunction(()=>document.querySelector('.super-fill').dataset.active==='true');
+ assert.equal(await page.locator('.super-fill').evaluate(el=>Number.parseFloat(el.style.left)),superPoint[0]-padBox.x);
+ assert.equal(await page.locator('.super-fill').evaluate(el=>Number.parseFloat(el.style.top)),superPoint[1]-padBox.y);
+ await page.waitForFunction(()=>{
+  const el=document.querySelector('.super-fill');
+  const scale=new DOMMatrixReadOnly(getComputedStyle(el).transform).a;
+  return scale>0&&scale<0.99;
+ });
+ await page.screenshot({path:new URL('artifacts/super-fill-transition.png',root).pathname});
+ await waitForFill(1);
+ const fillDiameter=await page.locator('.super-fill').evaluate(el=>Number.parseFloat(el.style.width));
+ assert(fillDiameter>=2*Math.hypot(padBox.width-superPoint[0],superPoint[1]),'Circle must cover the furthest pad corner');
+ assert.equal(await page.locator('.super-fill').evaluate(el=>getComputedStyle(el).backgroundColor),'rgb(0, 0, 0)');
+ assert.equal(await page.evaluate(()=>document.elementFromPoint(120,250).id),'pad','Fill must not intercept gestures');
+ await page.screenshot({path:new URL('artifacts/super-fill.png',root).pathname});
+ await assertBlankZones();
  await touch('touchStart',[superPoint,[120,250],[190,250]]);
  await touch('touchMove',[superPoint,[145,275],[215,275]]);
  await touch('touchEnd',[]);
  assert.equal(await page.locator('#mod-super').getAttribute('aria-pressed'),'false');
+ await waitForFill(0);
  // Super is inside the pad but must never count as a scroll/resize finger.
  from=packets.length;
  await touch('touchStart',[superPoint]);
@@ -144,6 +179,21 @@ try {
  await touch('touchEnd',[]);await page.waitForTimeout(50);
  gesture=packets.slice(from).filter(p=>p[0]!==8);
  assert.deepEqual(gesture.map(p=>p[0]),[9,5,1,6,10]);
+ // Canceled touches, viewport changes, and reduced motion must not leave a stale fill.
+ await touch('touchStart',[superPoint]);
+ await waitForFill(1);
+ await touch('touchCancel',[]);
+ await waitForFill(0);
+ await page.emulateMedia({reducedMotion:'reduce'});
+ await touch('touchStart',[superPoint]);
+ await waitForFill(1);
+ await page.setViewportSize({width:420,height:844});
+ await page.waitForFunction(()=>document.getElementById('pad').getBoundingClientRect().width===420);
+ await page.waitForFunction(()=>Number.parseFloat(document.querySelector('.super-fill').style.width)>=2*Math.hypot(420-97.5,708));
+ await touch('touchEnd',[]);
+ await waitForFill(0);
+ await page.setViewportSize({width:390,height:844});
+ await page.emulateMedia({reducedMotion:'no-preference'});
  await page.locator('#keyboard-toggle').click();
  // Hold keyboard Super with one finger, then use shortcut keys with another.
  await page.locator('#native-input').focus();
@@ -154,6 +204,7 @@ try {
  assert.equal(await page.locator('#keyboard').isVisible(),true,'Super should reveal the key grid');
  assert.equal(await page.locator('#native-input').evaluate(el=>document.activeElement===el),false);
  assert.equal(await page.locator('#key-super').getAttribute('aria-pressed'),'true');
+ assert.equal(await fillActive(),'false','Keyboard Super must not activate the pad fill');
  const tapWhileHolding=async selector=>{
   const [x,y]=await center(selector);
   await touch('touchStart',[keySuperPoint,[x,y]]);
@@ -193,19 +244,23 @@ try {
  assert.deepEqual(packets.slice(from).filter(p=>p[0]!==8),[[9,224],[9,225],[11,46],[10,225],[10,224]],'Ctrl+Plus must preserve the shortcut');
  await mkdir(new URL('artifacts/',root),{recursive:true});
  await page.screenshot({path:new URL('artifacts/keyboard-shortcuts.png',root).pathname});
+ const resizeViewport=async viewport=>{
+  await page.setViewportSize(viewport);
+  await page.waitForFunction(()=>Math.abs(document.querySelector('main').getBoundingClientRect().height-innerHeight)<1);
+ };
  const fullyVisible=async selector=>page.locator(selector).evaluateAll(elements=>elements.every(el=>{
   const r=el.getBoundingClientRect();
-  return r.width>0&&r.height>0&&r.top>=0&&r.bottom<=innerHeight&&document.elementFromPoint(r.x+r.width/2,r.y+r.height/2)===el;
+  return r.width>0&&r.height>0&&r.top>=0&&r.bottom<=innerHeight&&[r.top+2,r.y+r.height/2,r.bottom-2].every(y=>document.elementFromPoint(r.x+r.width/2,y)===el);
  }));
  // Small phones fit the entire grid without sacrificing the fixed controls.
- await page.setViewportSize({width:360,height:640});
+ await resizeViewport({width:360,height:640});
  assert.equal(await fullyVisible('#keyboard button, #special-keys button, #native-mode, #grid-mode, #keyboard-close'),true,'Small phone keyboard controls must fit without scrolling');
  const modBox=await page.locator('#key-super').boundingBox();
  assert.equal(await page.locator('#key-super').evaluate(el=>{const r=el.getBoundingClientRect();return document.elementFromPoint(r.x+r.width/2,r.y+r.height/2)===el}),true);
  assert(modBox.width>=44,'Super must remain a usable touch target');
  assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
  await page.screenshot({path:new URL('artifacts/keyboard-small.png',root).pathname});
- await page.setViewportSize({width:390,height:844});
+ await resizeViewport({width:390,height:844});
  await touch('touchStart',[await center('#key-super')]);
  await page.locator('#native-mode').click();
  await touch('touchEnd',[]);
@@ -224,11 +279,11 @@ try {
  await page.screenshot({path:new URL('artifacts/keyboard.png',root).pathname});
  // Model the reduced visible area above a phone's software keyboard.
  for(const height of [440,320]) {
-  await page.setViewportSize({width:390,height});
+  await resizeViewport({width:390,height});
   assert.equal(await fullyVisible('#special-keys button, #native-mode, #grid-mode, #keyboard-close, #native-input'),true,'Phone typing controls must stay above the software keyboard');
  }
  await page.screenshot({path:new URL('artifacts/keyboard-compact.png',root).pathname});
- await page.setViewportSize({width:390,height:844});
+ await resizeViewport({width:390,height:844});
  await page.locator('#keyboard-close').click();
  await mkdir(new URL('artifacts/',root),{recursive:true});
  await page.screenshot({path:new URL('artifacts/phone.png',root).pathname});
@@ -255,6 +310,8 @@ try {
  assert.equal(await page.locator('#status').textContent(),'Disconnected');
  await page.locator('#disconnect').click();await page.waitForFunction(()=>document.getElementById('status').textContent==='Preview');
  await page.locator('#forget').click();assert.equal(await page.evaluate(()=>localStorage.getItem('ghostpad.key')),'');
+ await page.locator('#mod-super').tap();
+ assert.equal(await fillActive(),'false','Unpaired touches must not activate the fill');
  assert.deepEqual(errors,[]);
  console.log('Browser client: pairing, gestures, settings, reconnect, and forgetting passed. Screenshots: artifacts/.');
 } finally {await browser.close();}

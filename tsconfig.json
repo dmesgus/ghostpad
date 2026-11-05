@@ -10,7 +10,12 @@
     "strict": true,
     "rootDir": "web/src",
     "outDir": "web",
-    "noEmitOnError": true
+    "noEmitOnError": true,
+    "paths": {
+      "@/*": [
+        "./*"
+      ]
+    }
   },
   "include": [
     "web/src/*.ts"

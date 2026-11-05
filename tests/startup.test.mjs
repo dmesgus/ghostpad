@@ -4,19 +4,19 @@ import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
 const script = readFileSync(new URL('../web/gestures.js',import.meta.url),'utf8').replace('export class Gestures','class Gestures') + '\n' + readFileSync(new URL('../web/text.js',import.meta.url),'utf8').replaceAll('export function','function') + '\n' + readFileSync(new URL('../web/app.js',import.meta.url),'utf8').replace("import { Gestures } from './gestures.js';",'').replace("import { textEdit, normalizeText } from './text.js';",'');
 function start({key='a'.repeat(64),blocked=false,historyBlocked=false}={}) {
- const elements=new Map(),timeouts=new Map(),stored=new Map(),sockets=[];let next=1;
+ const elements=new Map(),timeouts=new Map(),stored=new Map(),sockets=[],fillEvents=[];let next=1;
  const element=id=>{if(!elements.has(id))elements.set(id,{textContent:'',value:'',checked:false,hidden:['keyboard-panel','keyboard'].includes(id),open:false,setPointerCapture(){},closest(){return null},contains(){return true},focus(){this.handlers.focus?.()},blur(){},querySelectorAll(){return []},classList:{toggle(){},remove(){}},handlers:{},attrs:{},addEventListener(type,fn){this.handlers[type]=fn},setAttribute(name,value){this.attrs[name]=value;if(name==='open')this.open=true},removeAttribute(name){if(name==='open')this.open=false}});return elements.get(id)};
  class Socket { static OPEN=1;static CLOSED=3;readyState=0;bufferedAmount=0;sent=[];constructor(){if(blocked)throw Error('Blocked');sockets.push(this)}send(value){this.sent.push(value)}close(){this.readyState=3} }
- const window={setTimeout(fn){const id=next++;timeouts.set(id,fn);return id},setInterval(){return next++},addEventListener(){},dispatchEvent(){}};
- const context={document:{body:{classList:{toggle(){}}},hidden:false,getElementById:element,addEventListener(){}},window,localStorage:{getItem:k=>stored.get(k)||null,setItem:(k,v)=>stored.set(k,v)},location:{hash:key?'#key='+key:'',pathname:'/',protocol:'http:',host:'192.168.1.42:8765'},history:{replaceState(){if(historyBlocked)throw Error('Unavailable')}},WebSocket:Socket,URLSearchParams,Event,performance:{now:()=>0},setTimeout:window.setTimeout,clearTimeout:id=>timeouts.delete(id),clearInterval(){},requestAnimationFrame(){return next++},cancelAnimationFrame(){}};
+ const window={setTimeout(fn){const id=next++;timeouts.set(id,fn);return id},setInterval(){return next++},addEventListener(){},dispatchEvent(event){if(event.type==='ghostpad-super-fill')fillEvents.push(event.detail)}};
+ const context={document:{body:{classList:{toggle(){}}},hidden:false,getElementById:element,addEventListener(){}},window,localStorage:{getItem:k=>stored.get(k)||null,setItem:(k,v)=>stored.set(k,v)},location:{hash:key?'#key='+key:'',pathname:'/',protocol:'http:',host:'192.168.1.42:8765'},history:{replaceState(){if(historyBlocked)throw Error('Unavailable')}},WebSocket:Socket,URLSearchParams,Event,CustomEvent,performance:{now:()=>0},setTimeout:window.setTimeout,clearTimeout:id=>timeouts.delete(id),clearInterval(){},requestAnimationFrame(){return next++},cancelAnimationFrame(){}};
  runInNewContext(script,context);
- return {element,sockets,timeouts,stored};
+ return {element,sockets,timeouts,stored,fillEvents};
 }
 test('page startup pairs and reaches ready with browser-shaped WebSocket events',()=>{const s=start();const ws=s.sockets[0];ws.readyState=1;ws.onopen();assert.equal(ws.sent[0],'a'.repeat(64));ws.onmessage({data:'ready:linux'});assert.equal(s.element('status').textContent,'Connected');assert.equal(s.timeouts.size,0);});
 test('blocked WebSocket displays a visible error instead of throwing',()=>{const s=start({blocked:true});assert.equal(s.element('status').textContent,'Connection blocked');assert.match(s.element('hint').textContent,/Safari/);assert.equal(s.element('reload').hidden,false);});
 test('hung upgrade times out and schedules retry even if browser never fires close',()=>{const s=start();const first=s.sockets[0];[...s.timeouts.values()][0]();assert.equal(first.readyState,3);assert.equal(s.element('status').textContent,'Reconnecting');const retry=[...s.timeouts.values()].at(-1);retry();assert.equal(s.sockets.length,2);first.onmessage({data:'ready:linux'});assert.notEqual(s.element('status').textContent,'Connected');});
 test('Safari history restriction does not abort startup',()=>{const s=start({historyBlocked:true});assert.equal(s.sockets.length,1);});
-test('missing pairing is visible on the touch surface',()=>{const s=start({key:''});assert.equal(s.sockets.length,0);assert.equal(s.element('status').textContent,'Pair your phone');assert.match(s.element('hint').textContent,/QR code/);});
+test('missing pairing displays connection guidance',()=>{const s=start({key:''});assert.equal(s.sockets.length,0);assert.equal(s.element('status').textContent,'Pair your phone');assert.match(s.element('hint').textContent,/QR code/);});
 test('settings open and close when native dialog support is missing',()=>{const s=start();s.element('settings-open').onclick();assert.equal(s.element('settings').open,true);s.element('settings-close').onclick();assert.equal(s.element('settings').open,false);});
 
 function ready(s) {const ws=s.sockets[0];ws.readyState=1;ws.onopen();ws.onmessage({data:'ready:linux'});return ws;}
@@ -191,4 +191,27 @@ test('plus preserves held Super until the finger lifts',()=>{
  const s=start(),ws=ready(s);holdSuper(s);tapKey(s,46,'keyboard',true);
  assert.deepEqual(packets(ws),[[9,227],[9,225],[11,46],[10,225]]);
  assert.equal(s.element('key-super').attrs['aria-pressed'],'true');liftSuper(s);assert.deepEqual(packets(ws).at(-1),[10,227]);
+});
+
+for (const end of ['pointerup','pointercancel','lostpointercapture']) test(`pad fill follows Super and clears on ${end}`,()=>{
+ const s=start();ready(s);
+ s.element('mod-super').handlers.pointerdown({preventDefault(){},pointerId:1,pointerType:'touch',clientX:50,clientY:700});
+ assert.equal(s.fillEvents.at(-1).active,true);
+ assert.equal(s.fillEvents.at(-1).x,50);assert.equal(s.fillEvents.at(-1).y,700);
+ s.element('mod-super').handlers[end]({pointerId:1});
+ assert.equal(s.fillEvents.at(-1).active,false);
+});
+test('keyboard Super alone never starts the pad fill, including after a pad hold',()=>{
+ const s=start();ready(s);holdSuper(s);assert.equal(s.fillEvents.at(-1).active,false);
+ holdSuper(s,'mod-super',2);assert.equal(s.fillEvents.at(-1).active,true);
+ liftSuper(s,'mod-super',2);assert.equal(s.fillEvents.at(-1).active,false);
+ assert.equal(s.element('key-super').attrs['aria-pressed'],'true');
+});
+for (const target of ['keyboard-toggle','settings-open','disconnect']) test(`${target} clears the pad fill`,()=>{
+ const s=start();ready(s);holdSuper(s,'mod-super');s.element(target).onclick();
+ assert.equal(s.fillEvents.at(-1).active,false);
+});
+test('disconnect clears the pad fill without replaying it after reconnect',()=>{
+ const s=start(),ws=ready(s);holdSuper(s,'mod-super');ws.readyState=3;ws.onclose();
+ assert.equal(s.fillEvents.at(-1).active,false);
 });

@@ -4,7 +4,7 @@ A little space. A lot of control.
 
 Ghostpad turns a phone browser into a wireless trackpad for a Linux computer on the same Wi-Fi. A minimal touch surface, a connection indicator, and settings tucked behind it. Local operation, no accounts, no telemetry, no external assets. MIT licensed.
 
-**v0.3 implementation:** Rust receiver, framework-free TypeScript interface, binary WebSocket input, Linux uinput backend. Designed for Safari on iPhone; Android touch browsers use the same interface. Physical iPhone/Android and compositor testing is still required. Windows/macOS receiver backends are roadmap items, not implemented.
+**v0.3 implementation:** Rust receiver, TypeScript interface with a React/Motion animation layer, binary WebSocket input, Linux uinput backend. Designed for Safari on iPhone; Android touch browsers use the same interface. Physical iPhone/Android and compositor testing is still required. Windows/macOS receiver backends are roadmap items, not implemented.
 
 ## Run
 
@@ -52,15 +52,15 @@ Preview mode explicitly disables actual cursor input. Stop either mode with Ctrl
 | Move | Slide one finger |
 | Left click | Tap one finger |
 | Double click | Tap one finger twice quickly |
-| Right click | Tap two fingers or the RC zone |
+| Right click | Tap two fingers or the invisible bottom-right zone |
 | Vertical/horizontal scroll | Slide two fingers, or slide one finger in the side strip |
 | Zoom | Pinch two fingers apart to zoom in, together to zoom out |
 | Drag / select text | Tap, then quickly touch again and slide without lifting; lift to release. Holding one finger still for 0.4 seconds before sliding also works |
 | Keyboard | Tap the keyboard icon, then the text field for your phone keyboard; select Key grid for custom keys |
-| Super | Press and hold the Super zone inside the pad; lift to release |
+| Super | Press and hold the invisible bottom-left zone inside the pad; lift to release |
 | Move a Hyprland window | Position the cursor over it, hold Super, drag the pad with another finger |
 | Resize a Hyprland window | Position the cursor over it, hold Super, drag the pad with two other fingers |
-| Settings | Tap the connection indicator / ellipsis |
+| Settings | Tap the sliders icon or the grab handle below the pad |
 
 Pinch zoom uses a separate virtual multitouch touchpad (`Ghostpad gestures`) to send native pinch gestures through libinput to the desktop browser. The phone sends a continuous scale, with no Ctrl key or mouse-wheel zoom. Browser/compositor support for native touchpad pinch is required; no stepped zoom fallback is applied. Pinch direction is independent of natural scrolling and scroll speed. Two-finger gestures distinguish pinching from sliding and keep that mode until a finger lifts. Small initial slides get a brief (up to 40 ms of movement) decision window so they do not prematurely lock a pinch into scrolling; clear swipes respond immediately. Pinching stays zoom-only even when the fingers drift across the pad. Restart the rebuilt receiver and refresh the phone page together to load the new pinch protocol.
 
@@ -70,7 +70,7 @@ The keyboard sheet offers **Phone keyboard** and **Key grid**. Tap the text area
 
 The key grid retains letters, numbers, punctuation, arrows, Enter, Tab, Escape, Backspace, and Delete. The dedicated + key supplies Shift automatically and combines with modifiers for shortcuts such as Ctrl+Plus. For Super+Shift+3, tap Shift, hold Super, tap 3 with another finger, then lift Super. You can also select Shift while holding Super. For Ctrl+C, tap Ctrl, then c. The mode switch and modifier row stay visible while the key grid scrolls. Duplicate navigation keys are removed from the grid. When the software keyboard reduces the available height, the touchpad and dock hide to keep keyboard controls accessible. Native text input releases modifiers before typing; shortcut controls dismiss the phone keyboard to avoid combining plain text with Super/Ctrl/Alt. Native keyboard presentation, dictation, autocorrection and composition are controlled by Safari/iOS. IME events are held until commit, but committed non-ASCII text is not supported in this release.
 
-The light interface follows the supplied references: a large grey touch surface, separate thumb zones for hold-Super and RC (right-click) inside the bottom of the pad, a white dock with Settings and keyboard controls, and inline bottom sheets. The grab handle opens settings; tracking and scrolling have Low/Standard/High presets. Window gestures use the installed Hyprland bindings (Super + left drag to move, Super + right drag to resize). Place the cursor over the intended window before holding Super. No Hyprland configuration is changed.
+The interface uses a full-width, blank grey touch surface with rounded bottom corners. The scroll strip and bottom thumb zones keep their touch behavior without visible labels or dividers. Holding the pad’s Super zone expands a black circle from the touch point to fill the whole surface; releasing it reverses the fill. The keyboard’s Super control does not trigger this effect. Reduced-motion preferences switch the fill instantly. Hold the bottom-left zone for Super; tap the bottom-right zone to right-click. Connection status sits in the white dock between Settings and keyboard controls. Settings and keyboard share the same monochrome styling. The grab handle opens settings; tracking and scrolling have Low/Standard/High presets. Settings also includes a collapsible gesture guide. Window gestures use the installed Hyprland bindings (Super + left drag to move, Super + right drag to resize). Place the cursor over the intended window before holding Super. No Hyprland configuration is changed.
 
 A scrolling strip sits inside the right side of the pad by default. Slide one finger in the strip to scroll with the same speed and natural-scrolling behavior as two fingers. Tapping or holding the strip does not click or drag. A gesture stays in the zone where it began, even if the finger crosses the boundary; adding another surface finger stops strip scrolling until all surface fingers lift. In Settings → Scrolling → Scroll strip side, choose Left or Right; the choice is saved on the phone.
 
@@ -96,7 +96,7 @@ The server limits concurrent workers, request/frame sizes, and input rate, valid
 ## Build and test
 
 ```sh
-npm install                 # only needed for TypeScript edits / browser tests
+npm ci                      # install frontend build and test dependencies
 npm run build:web
 npm test
 cargo fmt --check
@@ -117,7 +117,9 @@ sudo python3 tests/native_pinch.py /tmp/ghostpad-native-pinch
 
 This optional test needs access to `/dev/uinput` and the generated `/dev/input/event*` node. It exclusively grabs its own temporary touchpad before sending events, checks native pinch begin/update/end in both directions, and destroys the device before releasing the grab. It does not inject test gestures into desktop apps or change system configuration. It does not replace phone/browser testing.
 
-The compiled JavaScript and CSS are embedded in the Rust binary and served inline in one HTML response, authorized by exact CSP hashes. Startup does not wait for separate style or module downloads. The generated JavaScript targets ES2018, and the page includes viewport/dialog fallbacks and a startup error message. Rebuild Rust after changing it. `tests/integration.py` exercises actual HTTP/WebSocket/TLS connections, key persistence and rotation, invalid authentication, controller exclusion, and timeout recovery. It explicitly skips if socket creation is forbidden. Browser tests exercise a mobile viewport and touch gestures in preview mode, and save screenshots to `artifacts/`.
+Frontend component paths and build setup are documented in [UI.md](UI.md). Edit `web/src/style.css`; `web/style.css` is generated by Tailwind.
+
+The compiled JavaScript (including the React/Motion bundle) and CSS are embedded in the Rust binary and served inline in one HTML response, authorized by exact CSP hashes. Startup does not wait for separate style or module downloads. The generated JavaScript targets ES2018, and the page includes viewport/dialog fallbacks and a startup error message. Rebuild Rust after changing it. `tests/integration.py` exercises actual HTTP/WebSocket/TLS connections, key persistence and rotation, invalid authentication, controller exclusion, and timeout recovery. It explicitly skips if socket creation is forbidden. Browser tests exercise a mobile viewport and touch gestures in preview mode, and save screenshots to `artifacts/`.
 
 Validation in the build environment: Rust protocol/server tests and TypeScript gesture tests pass; TypeScript compilation, Clippy, and release compilation pass. Network integration and Chromium execution are blocked by sandbox socket restrictions. Actual iPhone cursor feel, Linux event delivery, TLS handshake interoperability, CPU/battery measurements, and visual browser validation remain to be verified on a normal host. No latency or battery benchmarks are claimed.
 

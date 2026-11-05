@@ -1,0 +1,10 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "jsx": "react-jsx",
+    "noEmit": true,
+    "types": ["node", "react", "react-dom"]
+  },
+  "include": ["components/**/*.tsx", "lib/**/*.ts", "web/src/super-fill.tsx"]
+}

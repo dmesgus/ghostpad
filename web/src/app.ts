@@ -26,13 +26,24 @@ let lastMotion = -Infinity, lastPing = 0;
 let padTouches = 0, ignorePad = false;
 let scrollTouch: { id: number; x: number; y: number; moved: boolean } | null = null;
 const superPointers = new Set<number>();
+const padSuperPointers = new Set<number>();
+let superOrigin: { x: number | null; y: number | null } = { x: null, y: null };
+let lastSuperFill = '';
+function updateSuperFill() {
+  const active = modifiers.has('super') && (padSuperPointers.size > 0 || superKeys.has($('mod-super')));
+  const detail = { active, ...superOrigin };
+  const signature = JSON.stringify(detail);
+  if (signature === lastSuperFill) return;
+  lastSuperFill = signature;
+  window.dispatchEvent(new CustomEvent('ghostpad-super-fill', { detail }));
+}
 const superKeys = new Set<HTMLElement>();
 let textTimer = 0, textQueue: ArrayBuffer[] = [], previousText = '', composing = false;
 const modifiers = new Map<string, number>();
 // Ctrl, Alt, and Shift apply to one shortcut; Super stays down while held.
 const shortcutModifiers = new Map<string, number>();
 let hold = 0, frame = 0, pending: { type: 'move' | 'scroll'; dx: number; dy: number } | { type: 'zoom'; scale: number } | null = null;
-function status(label: string, detail: string, online = false) { $('status').textContent = label; $('detail').textContent = detail; $('dot').classList.toggle('online', online); document.body.classList.toggle('connected', online && label !== 'Preview'); if (!online) $('hint').textContent = detail; }
+function status(label: string, detail: string, online = false) { $('status').textContent = label; $('detail').textContent = detail; $('dot').classList.toggle('online', online); document.body.classList.toggle('connected', online); if (!online) $('hint').textContent = detail; }
 function transmit(bytes: ArrayBuffer) {
   if (!ready || socket?.readyState !== WebSocket.OPEN) return;
   if (socket.bufferedAmount > 256) { socket.close(); return; }
@@ -77,7 +88,7 @@ function action(a: Action) {
 }
 const gestures = new Gestures(action, () => modifiers.has('super'));
 function resetScroll() { scrollTouch = null; scrollZone.classList.remove('active'); }
-function cancel() { stopText(); resetScroll(); superPointers.clear(); superKeys.clear(); padTouches = 0; ignorePad = false; clearTimeout(hold); clearTimeout(frame); frame = 0; pending = null; lastMotion = -Infinity; gestures.cancel(); send(7); modifiers.clear(); shortcutModifiers.clear(); updateModifiers(); pad.classList.remove('active'); $('drag-state').hidden = true; }
+function cancel() { stopText(); resetScroll(); superPointers.clear(); padSuperPointers.clear(); superKeys.clear(); padTouches = 0; ignorePad = false; clearTimeout(hold); clearTimeout(frame); frame = 0; pending = null; lastMotion = -Infinity; gestures.cancel(); send(7); modifiers.clear(); shortcutModifiers.clear(); updateModifiers(); pad.classList.remove('active'); $('drag-state').hidden = true; }
 for (const type of ['touchstart', 'touchmove', 'touchend'] as const) {
   pad.addEventListener(type, (event: TouchEvent) => {
     // Touches retain their original target when sliding across zone boundaries.
@@ -146,7 +157,6 @@ function connect() {
       const preview = e.data === 'ready:preview';
       status(preview ? 'Preview' : 'Connected', preview ? 'Preview mode. Gestures connect, but do not move the computer’s cursor.' : `Connected locally · ${location.protocol === 'https:' ? 'encrypted' : 'unencrypted, trusted Wi-Fi only'}`, true);
       $('hint').textContent = preview ? 'Connected in preview. Cursor control is off.' : 'Your desktop, at your fingertips.';
-      $('mode').textContent = preview ? 'PREVIEW · INPUT DISABLED' : 'LOCAL WI-FI · NO CLOUD';
       heartbeat = window.setInterval(() => { if (Date.now() - lastPong > 6000) ws.close(); else { lastPing = performance.now(); send(8); } }, 1500);
     } else if (e.data === 'unauthorized') {
       paused = true; key = ''; save('key', ''); status('Pair again', 'Pairing was revoked. Scan the receiver’s new QR code.'); ws.close();
@@ -186,6 +196,7 @@ function updateModifiers() {
   if (modifiers.has('super')) names.unshift('Super held');
   $('shortcut-help').textContent = names.length ? `${names.join(' + ')} · tap a key` : 'Hold Super; lift to release. Tap Shift, Ctrl or Alt for one shortcut.';
   document.body.classList.toggle('super-held', modifiers.has('super'));
+  updateSuperFill();
   if (ready) $('hint').textContent = modifiers.has('super') ? 'Super held · 1 finger moves · 2 fingers resize' : 'Pinch to zoom · hold Super to move or resize windows.';
 }
 function toggleModifier(name: string, usage: number) {
@@ -208,7 +219,7 @@ function setSuper(down: boolean) {
   if (down) modifiers.set('super', 227); else modifiers.delete('super');
   updateModifiers();
 }
-function releaseSuper() { if (!superPointers.size && !superKeys.size) setSuper(false); }
+function releaseSuper() { if (!superPointers.size && !superKeys.size) setSuper(false); updateSuperFill(); }
 for (const id of ['mod-super', 'key-super']) {
   const button = $(id);
   function prepareSuper() {
@@ -217,15 +228,20 @@ for (const id of ['mod-super', 'key-super']) {
   }
   button.addEventListener('pointerdown', event => {
     event.preventDefault(); if (!ready || textQueue.length || (event.pointerType === 'mouse' && event.button !== 0)) return;
+    if (id === 'mod-super') {
+      if (!padSuperPointers.size && !superKeys.has(button)) superOrigin = { x: event.clientX ?? null, y: event.clientY ?? null };
+      padSuperPointers.add(event.pointerId);
+    }
     superPointers.add(event.pointerId); button.setPointerCapture(event.pointerId); prepareSuper();
   });
   for (const event of ['pointerup', 'pointercancel', 'lostpointercapture'] as const) button.addEventListener(event, event => {
-    superPointers.delete(event.pointerId); releaseSuper();
+    superPointers.delete(event.pointerId); padSuperPointers.delete(event.pointerId); releaseSuper();
   });
   button.addEventListener('contextmenu', event => event.preventDefault());
   button.addEventListener('keydown', event => {
     if (event.key === ' ' || event.key === 'Enter') {
       event.preventDefault(); if (!ready || textQueue.length || event.repeat) return;
+      if (id === 'mod-super' && !padSuperPointers.size) superOrigin = { x: null, y: null };
       superKeys.add(button); prepareSuper();
     }
   });
@@ -273,7 +289,7 @@ function nativeEdit() {
 }
 nativeInput.addEventListener('focus', () => {
   // Plain typing must not accidentally become Super/Ctrl/Alt shortcuts.
-  gestures.cancel(); flush(); send(7); modifiers.clear(); shortcutModifiers.clear(); superPointers.clear(); superKeys.clear(); updateModifiers();
+  gestures.cancel(); flush(); send(7); modifiers.clear(); shortcutModifiers.clear(); superPointers.clear(); padSuperPointers.clear(); superKeys.clear(); updateModifiers();
 });
 nativeInput.addEventListener('compositionstart', () => { composing = true; });
 nativeInput.addEventListener('compositionend', () => { composing = false; nativeEdit(); });
