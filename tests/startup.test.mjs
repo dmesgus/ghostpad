@@ -5,7 +5,7 @@ import { runInNewContext } from 'node:vm';
 const script = readFileSync(new URL('../web/gestures.js',import.meta.url),'utf8').replace('export class Gestures','class Gestures') + '\n' + readFileSync(new URL('../web/text.js',import.meta.url),'utf8').replaceAll('export function','function') + '\n' + readFileSync(new URL('../web/scroll.js',import.meta.url),'utf8').replace('export class ScrollMomentum','class ScrollMomentum') + '\n' + readFileSync(new URL('../web/app.js',import.meta.url),'utf8').replace("import { Gestures } from './gestures.js';",'').replace("import { ScrollMomentum } from './scroll.js';",'').replace("import { textEdit, normalizeText } from './text.js';",'');
 function start({key='a'.repeat(64),blocked=false,historyBlocked=false}={}) {
  const elements=new Map(),timeouts=new Map(),deadlines=new Map(),frames=new Map(),stored=new Map(),sockets=[],fillEvents=[],documentHandlers={},windowHandlers={};let next=1,now=0;
- const element=id=>{if(!elements.has(id))elements.set(id,{textContent:'',value:'',checked:false,hidden:['keyboard-panel','keyboard'].includes(id),open:false,setPointerCapture(){},closest(){return null},contains(){return true},focus(){this.handlers.focus?.()},blur(){},querySelectorAll(){return []},classList:{toggle(){},remove(){}},handlers:{},attrs:{},addEventListener(type,fn){this.handlers[type]=fn},setAttribute(name,value){this.attrs[name]=value;if(name==='open')this.open=true},removeAttribute(name){if(name==='open')this.open=false}});return elements.get(id)};
+ const element=id=>{if(!elements.has(id))elements.set(id,{textContent:'',value:'',checked:false,hidden:['keyboard-panel','keyboard'].includes(id),open:false,setPointerCapture(){},click(){this.onclick?.()},closest(){return null},contains(){return true},focus(){this.handlers.focus?.()},blur(){},querySelectorAll(){return []},classList:{toggle(){},remove(){}},handlers:{},attrs:{},addEventListener(type,fn){this.handlers[type]=fn},setAttribute(name,value){this.attrs[name]=value;if(name==='open')this.open=true},removeAttribute(name){if(name==='open')this.open=false}});return elements.get(id)};
  class Socket { static OPEN=1;static CLOSED=3;readyState=0;bufferedAmount=0;sent=[];sentAt=[];constructor(){if(blocked)throw Error('Blocked');sockets.push(this)}send(value){this.sent.push(value);this.sentAt.push(now)}close(){this.readyState=3} }
  const window={setTimeout(fn,delay=0){const id=next++;timeouts.set(id,fn);deadlines.set(id,now+delay);return id},setInterval(){return next++},addEventListener(type,fn){windowHandlers[type]=fn},dispatchEvent(event){if(event.type==='ghostpad-super-fill')fillEvents.push(event.detail)}};
  const context={document:{body:{classList:{toggle(){}}},hidden:false,getElementById:element,addEventListener(type,fn){documentHandlers[type]=fn}},window,localStorage:{getItem:k=>stored.get(k)||null,setItem:(k,v)=>stored.set(k,v)},location:{hash:key?'#key='+key:'',pathname:'/',protocol:'http:',host:'192.168.1.42:8765'},history:{replaceState(){if(historyBlocked)throw Error('Unavailable')}},WebSocket:Socket,URLSearchParams,Event,CustomEvent,performance:{now:()=>now},setTimeout:window.setTimeout,clearTimeout:id=>{timeouts.delete(id);deadlines.delete(id)},clearInterval(){},requestAnimationFrame(fn){const id=next++;frames.set(id,fn);return id},cancelAnimationFrame:id=>frames.delete(id)};
@@ -373,4 +373,87 @@ for (const source of ['slider','preset']) test(`${source} updates pointer speed 
  touch(s,'touchstart',[[100,100]]);touch(s,'touchmove',[[120,110]]);touch(s,'touchend',[]);
  const view=new DataView(ws.sent.find(p=>typeof p!=='string'&&new Uint8Array(p)[0]===1));
  assert.equal(view.getFloat32(1,true),40);assert.equal(view.getFloat32(5,true),20);
+});
+
+function heldKey(s, usage, area='native-tools') {
+ const button={dataset:{key:String(usage),hold:''},classList:{toggle(){}},setPointerCapture(){},closest:selector=>selector==='#native-tools'?(area==='native-tools'?s.element(area):null):button};
+ const event={target:button,preventDefault(){},pointerId:17,pointerType:'touch',button:0};
+ return {button,event,send:(type,extra={})=>s.element(area).handlers[type]({...event,...extra})};
+}
+for(const usage of [40,41,42,43,44,74,76,79,80,81,82]) test(`key ${usage} presses immediately, stays held, and lifts exactly once`,()=>{
+ const s=start(),ws=ready(s),key=heldKey(s,usage);
+ key.send('pointerdown');assert.deepEqual(packets(ws),[[9,usage]]);
+ s.advance(2000);assert.deepEqual(packets(ws),[[9,usage]],'Repeat belongs to the desktop, with no browser timer');
+ key.send('pointerup');key.send('lostpointercapture');key.send('click',{detail:1});
+ assert.deepEqual(packets(ws),[[9,usage],[10,usage]]);
+ key.send('click',{detail:0});assert.deepEqual(packets(ws).at(-1),[11,usage],'Accessible click remains a single tap');
+});
+for(const end of ['pointercancel','lostpointercapture','touchcancel','keyboard-close','settings-open','disconnect','blur','hidden','pagehide','grid-mode']) test(`${end} releases a held essential key without replay`,()=>{
+ const s=start(),ws=ready(s),key=heldKey(s,42);key.send('pointerdown');
+ if(['pointercancel','lostpointercapture','touchcancel'].includes(end))key.send(end);
+ else if(['blur','pagehide'].includes(end))s.windowHandlers[end]();
+ else if(end==='hidden'){s.document.hidden=true;s.documentHandlers.visibilitychange();}
+ else s.element(end).onclick();
+ assert.deepEqual(packets(ws).slice(0,2),[[9,42],[10,42]]);
+ const count=packets(ws).length;key.send('pointerup');s.advance(2000);assert.equal(packets(ws).length,count);
+});
+test('connection loss discards held keys and late lifts cannot reach the new session',()=>{
+ const s=start(),ws=ready(s),key=heldKey(s,44);key.send('pointerdown');ws.readyState=3;ws.onclose();
+ s.advance(1000);const next=s.sockets.at(-1);next.readyState=1;next.onopen();next.onmessage({data:'ready:linux'});
+ key.send('pointerup');assert.deepEqual(packets(next),[]);
+ key.send('pointerdown');key.send('pointerup');assert.deepEqual(packets(next),[[9,44],[10,44]]);
+});
+test('held arrows retain one-shot modifiers and coexist with Super and other shortcuts',()=>{
+ const s=start(),ws=ready(s),key=heldKey(s,79,'special-keys');holdSuper(s);s.element('mod-shift').onclick();key.send('pointerdown');
+ assert.deepEqual(packets(ws),[[9,227],[9,225],[9,79]]);
+ tapKey(s,46,'keyboard',true);assert.deepEqual(packets(ws).slice(3),[[11,46]],'Plus must not lift the Shift held by the arrow');
+ key.send('pointerup');assert.deepEqual(packets(ws).slice(-2),[[10,79],[10,225]]);liftSuper(s);assert.deepEqual(packets(ws).at(-1),[10,227]);
+});
+test('two fingers on the same key release only after the last finger lifts',()=>{
+ const s=start(),ws=ready(s),key=heldKey(s,44);key.send('pointerdown');key.send('pointerdown',{pointerId:18});
+ key.send('pointerup');assert.deepEqual(packets(ws),[[9,44]]);
+ key.send('pointerup',{pointerId:18});assert.deepEqual(packets(ws),[[9,44],[10,44]]);
+});
+for(const activation of [' ','Enter']) test(`keyboard ${JSON.stringify(activation)} activation holds an essential key until keyup or focus loss`,()=>{
+ const s=start(),ws=ready(s),key=heldKey(s,80);key.send('keydown',{key:activation});key.send('keydown',{key:activation,repeat:true});
+ assert.deepEqual(packets(ws),[[9,80]]);key.send('keyup',{key:activation});assert.deepEqual(packets(ws).at(-1),[10,80]);
+ key.send('keydown',{key:activation});key.send('focusout');assert.deepEqual(packets(ws).slice(-2),[[9,80],[10,80]]);
+});
+test('native typing releases an accessory hold before sending text or deleting an empty context',()=>{
+ for(const empty of [false,true]){
+  const s=start(),ws=ready(s),key=heldKey(s,80),input=s.element('native-input');key.send('pointerdown');
+  if(empty)input.handlers.beforeinput({inputType:'deleteContentBackward',preventDefault(){}});
+  else {input.value='x';input.handlers.input();}
+  assert.deepEqual(packets(ws),[[9,80],[10,80],empty?[11,42]:[14,120]]);key.send('pointerup');assert.equal(packets(ws).length,3);
+ }
+});
+test('composition and queued edits cannot be overtaken by held navigation',()=>{
+ for(const composing of [false,true]){
+  const s=start(),ws=ready(s),key=heldKey(s,80),input=s.element('native-input');
+  if(composing)input.handlers.compositionstart();input.value='a'.repeat(240);input.handlers.input();
+  key.send('pointerdown');key.send('pointerup');s.advance(100);
+  assert(packets(ws).every(p=>p[0]===14));assert.equal(input.value,'a'.repeat(240));
+  if(!composing)assert.match(s.element('typing-help').textContent,/wait/);
+ }
+});
+
+function rightZoneTouch(s,type,points) {
+ const touches=points.map(([clientX,clientY],identifier)=>({identifier,clientX,clientY}));
+ let prevented=false;
+ s.element('right-click').handlers[type]({targetTouches:touches,changedTouches:touches,preventDefault(){prevented=true;}});
+ assert(prevented,'Native compatibility clicks must be suppressed');
+}
+test('right corner taps send once per lift without relying on native clicks',()=>{
+ const s=start(),ws=ready(s);
+ for(let i=0;i<2;i++) {rightZoneTouch(s,'touchstart',[[350,600]]);rightZoneTouch(s,'touchend',[[352,601]]);}
+ assert.deepEqual(packets(ws),[[4],[4]]);
+});
+for(const mode of ['move','release','multitouch','cancel','blur']) test(`right corner ${mode} cannot produce an accidental click`,()=>{
+ const s=start(),ws=ready(s);rightZoneTouch(s,'touchstart',[[350,600]]);
+ if(mode==='move')rightZoneTouch(s,'touchmove',[[320,600]]);
+ if(mode==='multitouch')rightZoneTouch(s,'touchstart',[[350,600],[355,650]]);
+ if(mode==='cancel')s.element('pad').handlers.touchcancel();
+ if(mode==='blur')s.windowHandlers.blur();
+ rightZoneTouch(s,'touchend',[[mode==='release'?320:350,600]]);
+ assert(!packets(ws).some(p=>p[0]===4));
 });

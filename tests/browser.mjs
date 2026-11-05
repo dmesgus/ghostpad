@@ -2,6 +2,7 @@
 const { chromium } = await import(process.env.PLAYWRIGHT_MODULE || 'playwright-core');
 import { readFile, mkdir } from 'node:fs/promises';
 import assert from 'node:assert/strict';
+import { checkAppearance, checkAppearanceFallbacks } from './support/appearance.mjs';
 import { browserPage } from './support/browser-page.mjs';
 const root = new URL('../', import.meta.url);
 const browser = await chromium.launch({executablePath: process.env.CHROMIUM_PATH || '/usr/bin/chromium', args:['--no-sandbox']});
@@ -54,6 +55,33 @@ try {
  assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
  const cdp=await context.newCDPSession(page);
  const touch=async(type,points)=>cdp.send('Input.dispatchTouchEvent',{type,touchPoints:points.map(([x,y],id)=>({x,y,id}))});
+ const assertThumbGeometry=async()=>{
+  const result=await page.evaluate(()=>{
+   const pad=document.querySelector('#pad').getBoundingClientRect();
+   const zones=['mod-super','right-click'].map(id=>({id,box:document.getElementById(id).getBoundingClientRect()}));
+   const hits=[];
+   for(const {id,box} of zones) {
+    for(const y of [.05,.15,.3,.45,.6,.75]) for(const x of [.08,.3,.55,.8,.96]) {
+     const px=id==='mod-super'?box.left+x*box.width:box.right-x*box.width;
+     const py=box.top+y*box.height;
+     const boundary=y<.5?Math.sqrt(1-((y-.5)/.5)**2):1;
+     hits.push({actual:document.elementFromPoint(px,py)?.id,expected:x<boundary?id:'pad',id,x,y,boundary});
+    }
+   }
+   for(const y of [.05,.5,.9,.99]) for(const x of [.34,.5,.66])
+    hits.push({actual:document.elementFromPoint(pad.left+x*pad.width,pad.top+y*pad.height)?.id,expected:'pad'});
+   return {hits,pad:pad.toJSON(),zones:zones.map(({box})=>box.toJSON()),strip:document.querySelector('#scroll-zone').getBoundingClientRect().toJSON(),left:document.querySelector('#pad').classList.contains('scroll-left')};
+  });
+  for(const hit of result.hits) assert.equal(hit.actual,hit.expected,`Curved hit areas and the center tracking lane must match their geometry: ${JSON.stringify(hit)}`);
+  for(const [index,zone] of result.zones.entries()) {
+   assert(Math.abs(zone.width-Math.min(result.pad.width*(index===0?.32:.24),index===0?160:108))<1);
+   assert(zone.height>=(index===0?68:56)&&zone.height<=(index===0?136:96));
+  }
+  assert(result.zones[1].height<result.zones[0].height,'Right-click must be shorter than Super');
+  const adjacent=result.zones[result.left?0:1];
+  assert(Math.abs(result.strip.bottom-adjacent.top)<.1,'Scroll strip must extend down to the corner on its own side');
+  assert.equal(await page.evaluate(([x,y])=>document.elementFromPoint(x,y)?.id,[result.strip.x+result.strip.width/2,adjacent.top-4]),'scroll-zone','The lower end of the extended strip must accept scrolling');
+ };
  // A precise correction must respond while the finger is down, with no click on lift.
  const preciseFrom=packets.length;
  await touch('touchStart',[[120,250]]);await touch('touchMove',[[125,250]]);await page.waitForTimeout(30);
@@ -137,7 +165,7 @@ try {
  const stripBox=await page.locator('#scroll-zone').boundingBox();
  const sx=stripBox.x+stripBox.width/2,sy=stripBox.y+stripBox.height/2;
  assert.equal(await page.locator('#pad').evaluate(el=>el.classList.contains('scroll-left')),false,'Strip defaults to the right');
- assert(stripBox.width>=44&&stripBox.height>=100,'Scroll strip must be an accessible touch target');
+ assert(stripBox.width>=56&&stripBox.height>=100,'Scroll strip must be an accessible touch target');
  from=packets.length;
  await touch('touchStart',[[sx,sy]]);await touch('touchMove',[[sx,sy+40]]);await page.waitForTimeout(100);await touch('touchEnd',[]);await page.waitForTimeout(50);
  const stripPackets=packets.slice(from).filter(p=>p[0]!==8);
@@ -178,8 +206,39 @@ try {
  for(const id of ['mod-super','right-click']) {
   const box=await page.locator(`#${id}`).boundingBox();
   assert(box.x>=padBox.x&&box.y>=padBox.y&&box.x+box.width<=padBox.x+padBox.width&&box.y+box.height<=padBox.y+padBox.height,'Thumb zone must be inside pad');
-  assert(box.width>=100&&box.height>=44,'Thumb zone must be easy to reach');
  }
+ await assertThumbGeometry();
+ // A touch starting in the old bottom band now tracks through either curve.
+ for(const id of ['mod-super','right-click']) {
+  await page.locator('#pad').dispatchEvent('touchcancel');
+  const box=await page.locator(`#${id}`).boundingBox();
+  const start=[padBox.x+padBox.width/2,padBox.y+padBox.height-80];
+  const end=[box.x+box.width/2,start[1]];
+  from=packets.length;
+  await touch('touchStart',[start]);await touch('touchMove',[end]);await touch('touchEnd',[]);await page.waitForTimeout(30);
+  const sent=packets.slice(from).filter(p=>p[0]!==8);
+  assert(sent.length>0&&sent.every(p=>p[0]===1),'Crossing a corner boundary must keep tracking without clicks or modifiers');
+  from=packets.length;
+  const cutaway=[id==='mod-super'?box.x+box.width*.9:box.x+box.width*.1,box.y+box.height*.1];
+  await touch('touchStart',[cutaway]);await touch('touchMove',[[cutaway[0],cutaway[1]-20]]);await touch('touchEnd',[]);await page.waitForTimeout(30);
+  const cutawayPackets=packets.slice(from).filter(p=>p[0]!==8);
+  assert(cutawayPackets.length>0&&cutawayPackets.every(p=>p[0]===1),'The area cut away by the curve must accept real tracking touches');
+ }
+ // The higher outer shoulder is usable; holding Super remains captured outside it.
+ const shoulder=await page.locator('#mod-super').boundingBox();
+ from=packets.length;
+ await touch('touchStart',[[shoulder.x+12,shoulder.y+shoulder.height*.15]]);
+ assert.equal(await page.locator('#mod-super').getAttribute('aria-pressed'),'true');
+ await touch('touchMove',[[padBox.width/2,shoulder.y-30]]);
+ assert.equal(await page.locator('#mod-super').getAttribute('aria-pressed'),'true');
+ await touch('touchEnd',[]);await page.waitForTimeout(30);
+ assert.deepEqual(packets.slice(from).filter(p=>p[0]!==8),[[9,227],[10,227]]);
+ assert.equal(await page.locator('#mod-super').getAttribute('aria-pressed'),'false');
+ const rightShoulder=await page.locator('#right-click').boundingBox();
+ from=packets.length;
+ await touch('touchStart',[[rightShoulder.x+rightShoulder.width-12,rightShoulder.y+rightShoulder.height*.15]]);
+ await touch('touchEnd',[]);await page.waitForTimeout(50);
+ assert.deepEqual(packets.slice(from).filter(p=>p[0]!==8),[[4]],'The higher right shoulder must right-click once');
  assert.equal(await page.locator('#right-click').getAttribute('aria-label'),'Right-click');
  assert.equal(await page.locator('#pad').innerText(),'','Pad must contain no visible labels');
  assert.equal(padBox.x,0,'Pad must meet the left screen edge');
@@ -205,7 +264,7 @@ try {
  const superPoint=[superBox.x+superBox.width/2,superBox.y+superBox.height/2];
  await touch('touchStart',[superPoint]);
  await page.waitForFunction(()=>document.querySelector('.super-fill').dataset.active==='true');
- assert.equal(await page.locator('.super-fill').evaluate(el=>Number.parseFloat(el.style.left)),superPoint[0]-padBox.x);
+ assert(Math.abs(await page.locator('.super-fill').evaluate(el=>Number.parseFloat(el.style.left))-(superPoint[0]-padBox.x))<.001);
  assert.equal(await page.locator('.super-fill').evaluate(el=>Number.parseFloat(el.style.top)),superPoint[1]-padBox.y);
  await page.waitForFunction(()=>{
   const el=document.querySelector('.super-fill');
@@ -217,6 +276,8 @@ try {
  const fillDiameter=await page.locator('.super-fill').evaluate(el=>Number.parseFloat(el.style.width));
  assert(fillDiameter>=2*Math.hypot(padBox.width-superPoint[0],superPoint[1]),'Circle must cover the furthest pad corner');
  assert.equal(await page.locator('.super-fill').evaluate(el=>getComputedStyle(el).backgroundColor),'rgb(0, 0, 0)');
+ assert.equal(await page.locator('meta[name="theme-color"]').getAttribute('content'),'#000000');
+ assert.equal(await page.locator('html').evaluate(el=>getComputedStyle(el).backgroundColor),'rgb(0, 0, 0)','Browser canvas must match the held fill');
  assert.equal(await page.evaluate(()=>document.elementFromPoint(120,250).id),'pad','Fill must not intercept gestures');
  await page.screenshot({path:new URL('artifacts/super-fill.png',root).pathname});
  await assertBlankZones();
@@ -238,6 +299,8 @@ try {
  await waitForFill(1);
  await touch('touchCancel',[]);
  await waitForFill(0);
+ assert.equal(await page.locator('meta[name="theme-color"]').getAttribute('content'),'#e8e8e8');
+ assert.equal(await page.locator('html').evaluate(el=>getComputedStyle(el).backgroundColor),'rgb(232, 232, 232)','Cancellation must restore the browser canvas');
  await page.emulateMedia({reducedMotion:'reduce'});
  await page.waitForTimeout(100);
  const stillFrames=await page.evaluate(()=>window.decorativeFrames);
@@ -247,7 +310,7 @@ try {
  await waitForFill(1);
  await page.setViewportSize({width:420,height:844});
  await page.waitForFunction(()=>document.getElementById('pad').getBoundingClientRect().width===420);
- await page.waitForFunction(()=>Number.parseFloat(document.querySelector('.super-fill').style.width)>=2*Math.hypot(420-97.5,708));
+ await page.waitForFunction(([x,y])=>Number.parseFloat(document.querySelector('.super-fill').style.width)>=2*Math.hypot(420-x,y),superPoint);
  await touch('touchEnd',[]);
  await waitForFill(0);
  await page.setViewportSize({width:390,height:844});
@@ -275,7 +338,7 @@ try {
  assert.equal(await page.locator('#key-super').getAttribute('aria-pressed'),'true');
  assert.equal(await page.locator('#mod-shift').getAttribute('aria-pressed'),'false');
  await tapWhileHolding('#special-keys button[data-key="40"]');await page.waitForTimeout(50);
- assert.deepEqual(packets.slice(from).filter(p=>p[0]!==8).at(-1),[11,40]);
+ assert.deepEqual(packets.slice(from).filter(p=>p[0]!==8).slice(-2),[[9,40],[10,40]]);
  await touch('touchEnd',[]);await page.waitForTimeout(50);
  assert.deepEqual(packets.slice(from).filter(p=>p[0]!==8).at(-1),[10,227]);
  assert.equal(await page.locator('#key-super').getAttribute('aria-pressed'),'false');
@@ -336,19 +399,53 @@ try {
  assert(packets.some(p=>p[0]===14),'Native text packet missing');
  await mkdir(new URL('artifacts/',root),{recursive:true});
  await page.screenshot({path:new URL('artifacts/keyboard.png',root).pathname});
+ await assertThumbGeometry();
  // Touch and mouse accessory keys must send once without taking focus from typing.
- for(const usage of [41,43,80,79,42,40]) {
+ for(const usage of [41,43,80,79,81,82,42,40,44]) {
   from=packets.length;
   await page.locator(`#native-tools button[data-key="${usage}"]`).tap();
   await page.waitForTimeout(30);
   assert.equal(await page.locator('#native-input').evaluate(el=>document.activeElement===el),true,'Accessory taps must keep the phone keyboard open');
-  assert.deepEqual(packets.slice(from).filter(p=>p[0]!==8),[[11,usage]],'Accessory taps must send exactly one remote key');
+  assert.deepEqual(packets.slice(from).filter(p=>p[0]!==8),[[9,usage],[10,usage]],'Accessory taps must send exactly one press and release');
  }
  from=packets.length;
  await page.locator('#native-input').fill('after navigation');await page.waitForTimeout(50);
  assert.deepEqual(packets.slice(from).filter(p=>p[0]!==8),[[14,...Buffer.from('after navigation')]],'Navigation must start a fresh typing context');
  await page.locator('#native-tools button[data-key="40"]').click();
  assert.equal(await page.locator('#native-input').evaluate(el=>document.activeElement===el),true,'Mouse accessory clicks must also preserve focus');
+ // Holds are real key-downs, including second-finger controls and captured drifts.
+ for(const usage of [41,43,80,79,81,82,42,40,44]) {
+  const point=await center(`#native-tools button[data-key="${usage}"]`);
+  from=packets.length;await touch('touchStart',[point]);await page.waitForTimeout(550);
+  assert.deepEqual(packets.slice(from).filter(p=>p[0]!==8),[[9,usage]],'The key must stay down until the finger lifts');
+  assert.equal(await page.locator(`#native-tools button[data-key="${usage}"]`).evaluate(el=>el.classList.contains('held')),true);
+  assert.equal(await page.locator('#native-input').evaluate(el=>document.activeElement===el),true,'Holding must preserve phone typing focus');
+  await touch('touchEnd',[]);await page.waitForTimeout(30);
+  assert.deepEqual(packets.slice(from).filter(p=>p[0]!==8),[[9,usage],[10,usage]],'A hold must release once, without a trailing click');
+ }
+ for(const ending of ['touchEnd','touchCancel']) {
+  const point=await center('#native-tools button[data-key="42"]');from=packets.length;
+  await touch('touchStart',[point]);await touch('touchMove',[[point[0],point[1]-90]]);await touch(ending,[]);await page.waitForTimeout(30);
+  assert.deepEqual(packets.slice(from).filter(p=>p[0]!==8),[[9,42],[10,42]],'Lifting or canceling outside the button must release the captured key');
+ }
+ from=packets.length;
+ const space=await center('#native-tools button[data-key="44"]'),arrow=await center('#native-tools button[data-key="79"]');
+ await touch('touchStart',[space]);await touch('touchStart',[space,arrow]);await page.waitForTimeout(30);
+ assert.deepEqual(packets.slice(from).filter(p=>p[0]!==8),[[9,44],[9,79]]);
+ await cdp.send('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[{x:arrow[0],y:arrow[1],id:1}]});await page.waitForTimeout(30);
+ assert.deepEqual(packets.slice(from).filter(p=>p[0]!==8).at(-1),[10,79]);
+ assert.equal(await page.locator('#native-tools button[data-key="44"]').evaluate(el=>el.classList.contains('held')),true);
+ await touch('touchEnd',[]);await page.waitForTimeout(30);
+ assert.deepEqual(packets.slice(from).filter(p=>p[0]!==8).at(-1),[10,44]);
+ // Mouse and keyboard activation follow the same hold lifecycle.
+ const backspace=page.locator('#native-tools button[data-key="42"]');
+ await backspace.hover();from=packets.length;await page.mouse.down();await page.waitForTimeout(30);
+ assert.deepEqual(packets.slice(from).filter(p=>p[0]!==8),[[9,42]]);await page.mouse.up();await page.waitForTimeout(30);
+ assert.deepEqual(packets.slice(from).filter(p=>p[0]!==8),[[9,42],[10,42]]);
+ await backspace.focus();from=packets.length;await page.keyboard.down('Enter');await page.waitForTimeout(30);
+ assert.deepEqual(packets.slice(from).filter(p=>p[0]!==8),[[9,42]]);await page.keyboard.up('Enter');await page.waitForTimeout(30);
+ assert.deepEqual(packets.slice(from).filter(p=>p[0]!==8),[[9,42],[10,42]]);
+ await page.locator('#native-input').focus();
  // Model the reduced visible area above a phone's software keyboard.
  for(const viewport of [{width:390,height:440},{width:390,height:320},{width:320,height:220},{width:640,height:240}]) {
   await resizeViewport(viewport);
@@ -400,6 +497,13 @@ try {
  await page.evaluate(()=>{Object.defineProperty(window,'visualViewport',window.viewportDescriptor);window.dispatchEvent(new Event('resize'));});
  await resizeViewport({width:390,height:844});
  await page.locator('#keyboard-close').tap();
+ for(const viewport of [{width:320,height:568},{width:430,height:932},{width:640,height:360}]) {
+  await resizeViewport(viewport);
+  await assertThumbGeometry();
+  from=packets.length;await page.locator('#mod-super').tap();await page.waitForTimeout(30);
+  assert.deepEqual(packets.slice(from).filter(p=>p[0]!==8),[[9,227],[10,227]]);
+ }
+ await resizeViewport({width:390,height:844});
  await mkdir(new URL('artifacts/',root),{recursive:true});
  await page.screenshot({path:new URL('artifacts/phone.png',root).pathname});
  await page.locator('#settings-open').click();
@@ -417,16 +521,19 @@ try {
  assert.equal(await page.locator('#scroll-side button[data-side="left"]').getAttribute('aria-pressed'),'true','Side preference must survive reload');
  const leftBox=await page.locator('#scroll-zone').boundingBox(),reloadedPad=await page.locator('#pad').boundingBox();
  assert(Math.abs(leftBox.x-reloadedPad.x)<=2,'Strip must move to the left edge');
+ await assertThumbGeometry();
  from=packets.length;
  await touch('touchStart',[[leftBox.x+22,250]]);await touch('touchMove',[[leftBox.x+22,290]]);await page.waitForTimeout(100);await touch('touchEnd',[]);await page.waitForTimeout(50);
  assert.deepEqual(packets.slice(from).filter(p=>p[0]!==8),stripPackets,'Left strip must scroll identically');
  await page.screenshot({path:new URL('artifacts/phone-scroll-left.png',root).pathname});
+ await checkAppearance(page,root);
  await page.locator('#settings-open').click();await page.locator('#disconnect').click();
  assert.equal(await page.locator('#status').textContent(),'Disconnected');
  await page.locator('#disconnect').click();await page.waitForFunction(()=>document.getElementById('status').textContent==='Preview');
  await page.locator('#forget').click();assert.equal(await page.evaluate(()=>localStorage.getItem('ghostpad.key')),'');
  await page.locator('#mod-super').tap();
  assert.equal(await fillActive(),'false','Unpaired touches must not activate the fill');
+ await checkAppearanceFallbacks(page);
  assert.deepEqual(errors,[]);
  console.log('Browser client: pairing, gestures, settings, reconnect, and forgetting passed. Screenshots: artifacts/.');
 } finally {await browser.close();}

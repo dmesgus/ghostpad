@@ -114,7 +114,10 @@ fn create_device(keyboard: bool) -> io::Result<File> {
         }
     };
     set(0x40045564, 1)?;
-    if !keyboard {
+    if keyboard {
+        // Native repeat uses the desktop/kernel delay and rate while a key is held.
+        set(0x40045564, 0x14)?; // EV_REP
+    } else {
         set(0x40045564, 2)?;
     }
     let keys: Vec<u16> = if keyboard {
@@ -364,6 +367,26 @@ mod tests {
         );
         assert!(decode(&[9, 255]).is_err());
         assert!(decode(&[11, 0]).is_err());
+    }
+    #[test]
+    fn essential_keys_stay_down_until_lift_or_release() {
+        for usage in [40, 41, 42, 43, 44, 74, 76, 79, 80, 81, 82] {
+            let mut p = Pointer::new(true).unwrap();
+            let code = crate::keys::linux_key(usage).unwrap();
+            for packet in [[9, usage], [9, usage], [11, usage]] {
+                p.handle(decode(&packet).unwrap()).unwrap();
+            }
+            assert_eq!(p.events, vec![(true, code, 1)]);
+            assert!(p.is_down());
+            p.handle(decode(&[10, usage]).unwrap()).unwrap();
+            p.handle(decode(&[10, usage]).unwrap()).unwrap();
+            assert_eq!(p.events, vec![(true, code, 1), (true, code, 0)]);
+            assert!(!p.is_down());
+            p.handle(decode(&[9, usage]).unwrap()).unwrap();
+            p.release().unwrap();
+            assert_eq!(p.events.last(), Some(&(true, code, 0)));
+            assert!(!p.is_down());
+        }
     }
     #[test]
     fn native_text_has_correct_shift_order_and_no_stuck_keys() {

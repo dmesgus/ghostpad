@@ -27,6 +27,7 @@ let socket: WebSocket | null = null, ready = false, paused = false, retry = 500,
 let lastMotion = -Infinity, lastPing = 0;
 let padTouches = 0, ignorePad = false;
 let scrollTouch: { id: number; x: number; y: number; moved: boolean } | null = null;
+let rightTouch: Touch | null = null;
 const superPointers = new Set<number>();
 const padSuperPointers = new Set<number>();
 let superOrigin: { x: number | null; y: number | null } = { x: null, y: null };
@@ -43,6 +44,8 @@ let textTimer = 0, textQueue: ArrayBuffer[] = [], previousText = '', composing =
 const modifiers = new Map<string, number>();
 // Ctrl, Alt, and Shift apply to one shortcut; Super stays down while held.
 const shortcutModifiers = new Map<string, number>();
+const heldKeys = new Map<number | string, { button: HTMLButtonElement; usage: number; chord: number[] }>();
+const heldUsages = new Map<number, number>();
 let hold = 0, frame = 0, pending: { type: 'move' | 'scroll'; dx: number; dy: number } | { type: 'zoom'; scale: number } | null = null;
 function status(label: string, detail: string, online = false) { $('status').textContent = label; $('detail').textContent = detail; $('dot').classList.toggle('online', online); document.body.classList.toggle('connected', online); if (!online) $('hint').textContent = detail; }
 function transmit(bytes: ArrayBuffer) {
@@ -126,7 +129,7 @@ function moveStrip(touch: Touch) {
     scrollTouch = { id: scrollTouch.id, x: touch.clientX, y: touch.clientY, moved: true };
   }
 }
-function cancel() { stopMomentum(); stopText(); resetScroll(); superPointers.clear(); padSuperPointers.clear(); superKeys.clear(); padTouches = 0; ignorePad = false; clearTimeout(hold); clearTimeout(frame); frame = 0; pending = null; lastMotion = -Infinity; gestures.cancel(); send(7); modifiers.clear(); shortcutModifiers.clear(); updateModifiers(); pad.classList.remove('active'); setDragging(false); }
+function cancel() { rightTouch = null; stopMomentum(); stopText(); resetScroll(); superPointers.clear(); padSuperPointers.clear(); superKeys.clear(); padTouches = 0; ignorePad = false; clearTimeout(hold); clearTimeout(frame); frame = 0; pending = null; lastMotion = -Infinity; gestures.cancel(); releaseHeldKeys(); send(7); modifiers.clear(); shortcutModifiers.clear(); updateModifiers(); pad.classList.remove('active'); setDragging(false); }
 for (const type of ['touchstart', 'touchmove', 'touchend'] as const) {
   pad.addEventListener(type, (event: TouchEvent) => {
     // Touches retain their original target when sliding across zone boundaries.
@@ -301,7 +304,19 @@ for (const id of ['mod-super', 'key-super']) {
   button.addEventListener('blur', () => { superKeys.delete(button); releaseSuper(); });
 }
 window.addEventListener('blur', cancel);
-$('right-click').onclick = () => { if (ready) { nativeInput.blur(); resetTextContext(); gestures.cancel(); if (padTouches) ignorePad = true; clearTimeout(hold); flush(); send(4); } };
+const rightClick = $('right-click');
+rightClick.onclick = () => { if (ready) { nativeInput.blur(); resetTextContext(); gestures.cancel(); if (padTouches) ignorePad = true; clearTimeout(hold); flush(); send(4); } };
+// Handle touch taps directly: browsers can suppress a compatibility click after
+// a captured Super drag. Prevent the native click so each tap sends only once.
+rightClick.addEventListener('touchstart', event => {
+  event.preventDefault(); rightTouch = event.targetTouches.length === 1 ? event.targetTouches[0] : null;
+}, { passive: false });
+for (const type of ['touchmove', 'touchend'] as const) rightClick.addEventListener(type, event => {
+  event.preventDefault();
+  const touch = Array.from(event.changedTouches).find(t => t.identifier === rightTouch?.identifier);
+  if (touch && rightTouch && Math.hypot(touch.clientX - rightTouch.clientX, touch.clientY - rightTouch.clientY) > 9) rightTouch = null;
+  if (type === 'touchend') { if (touch && rightTouch) rightClick.click(); rightTouch = null; }
+}, { passive: false });
 $('keyboard-toggle').onclick = () => {
   if (!$('keyboard-panel').hidden) { closeKeyboard(); return; }
   cancel(); closeSettings(); $('keyboard-panel').hidden = false;
@@ -331,6 +346,7 @@ function encodeText(previous: string, value: string) {
 }
 function nativeEdit() {
   if (composing) return;
+  releaseHeldKeys();
   try {
     if (queueText(encodeText(previousText, nativeInput.value))) {
       previousText = normalizeText(nativeInput.value);
@@ -340,7 +356,7 @@ function nativeEdit() {
 }
 nativeInput.addEventListener('focus', () => {
   // Plain typing must not accidentally become Super/Ctrl/Alt shortcuts.
-  gestures.cancel(); flush(); send(7); modifiers.clear(); shortcutModifiers.clear(); superPointers.clear(); padSuperPointers.clear(); superKeys.clear(); updateModifiers();
+  gestures.cancel(); releaseHeldKeys(); flush(); send(7); modifiers.clear(); shortcutModifiers.clear(); superPointers.clear(); padSuperPointers.clear(); superKeys.clear(); updateModifiers();
   fitViewport();
 });
 nativeInput.addEventListener('blur', fitViewport);
@@ -350,10 +366,11 @@ nativeInput.addEventListener('input', nativeEdit);
 // Backspace on an empty local buffer still deletes on the remote computer.
 nativeInput.addEventListener('beforeinput', (event: InputEvent) => {
   if (!composing && event.inputType === 'deleteContentBackward' && !nativeInput.value && !previousText) {
-    event.preventDefault(); queueText([new Uint8Array([11, 42]).buffer]);
+    event.preventDefault(); releaseHeldKeys(); queueText([new Uint8Array([11, 42]).buffer]);
   }
 });
 function keyboardMode(native: boolean) {
+  if ($('native-panel').hidden !== !native) releaseHeldKeys();
   $('native-panel').hidden = !native; $('keyboard').hidden = native;
   $('native-tools').hidden = !native; $('special-keys').hidden = native;
   document.body.classList.toggle('grid-mode', !native);
@@ -362,9 +379,40 @@ function keyboardMode(native: boolean) {
 }
 $('native-mode').onclick = () => keyboardMode(true);
 $('grid-mode').onclick = () => keyboardMode(false);
+// Reference counts keep overlapping fingers/chords from releasing one another.
+function holdUsage(usage: number) {
+  const count = heldUsages.get(usage) || 0;
+  if (!count) keyEvent(9, usage);
+  heldUsages.set(usage, count + 1);
+}
+function liftUsage(usage: number) {
+  const count = heldUsages.get(usage) || 0;
+  if (count > 1) heldUsages.set(usage, count - 1);
+  else { heldUsages.delete(usage); keyEvent(10, usage); }
+}
+function beginKey(button: HTMLButtonElement, id: number | string) {
+  if (!ready || composing || heldKeys.has(id)) return;
+  if (textQueue.length) { $('typing-help').textContent = 'Please wait for the current text to finish sending.'; return; }
+  if (!button.closest('#native-tools')) nativeInput.blur();
+  gestures.cancel(); resetTextContext();
+  const chord = Array.from(shortcutModifiers.values()), usage = Number(button.dataset.key);
+  heldKeys.set(id, { button, usage, chord });
+  for (const modifier of chord) holdUsage(modifier);
+  holdUsage(usage); button.classList.toggle('held', true);
+  shortcutModifiers.clear(); updateModifiers();
+}
+function endKey(id: number | string) {
+  const key = heldKeys.get(id); if (!key) return;
+  heldKeys.delete(id); liftUsage(key.usage);
+  for (const modifier of key.chord.slice().reverse()) liftUsage(modifier);
+  key.button.classList.toggle('held', Array.from(heldKeys.values()).some(k => k.button === key.button));
+}
+function releaseHeldKeys() { for (const id of heldKeys.keys()) endKey(id); }
 function specialKey(event: MouseEvent) {
   const button = (event.target as HTMLElement).closest<HTMLButtonElement>('button[data-key]');
   if (!button || !ready || composing) return;
+  // Pointer holds already sent down/up. Detail zero remains an accessible click fallback.
+  if (button.dataset.hold !== undefined && (event.detail > 0 || Array.from(heldKeys.values()).some(k => k.button === button))) return;
   const held = new Set(shortcutModifiers.values());
   if (button.dataset.shift === 'true') held.add(225);
   if (held.size && textQueue.length) return;
@@ -374,27 +422,40 @@ function specialKey(event: MouseEvent) {
   const usage = Number(button.dataset.key);
   if (held.size) {
     // Send the complete chord in this turn, with no timers that could leave a modifier held.
-    for (const modifier of held) keyEvent(9, modifier);
+    for (const modifier of held) holdUsage(modifier);
     keyEvent(11, usage);
-    for (const modifier of Array.from(held).reverse()) keyEvent(10, modifier);
+    for (const modifier of Array.from(held).reverse()) liftUsage(modifier);
     shortcutModifiers.clear(); updateModifiers();
   } else queueText([new Uint8Array([11, usage]).buffer]);
 }
-$('keyboard').addEventListener('click', specialKey);
-$('special-keys').addEventListener('click', specialKey);
-$('native-tools').addEventListener('click', specialKey);
-// Cancel focus transfer on pointer-down; touch-end below still dispatches one tap.
-$('native-tools').addEventListener('pointerdown', event => {
-  if ((event.target as Element).closest('button') && document.activeElement === nativeInput) event.preventDefault();
-});
 // Browsers can omit clicks from a second finger while Super is held.
 // Handle touch taps explicitly, suppressing the browser's duplicate click.
 for (const id of ['keyboard', 'special-keys', 'native-tools']) {
   const area = $(id), taps = new Map<number, { button: HTMLButtonElement; x: number; y: number }>();
+  area.addEventListener('click', specialKey);
+  area.addEventListener('pointerdown', event => {
+    const button = (event.target as Element).closest<HTMLButtonElement>('button[data-hold]');
+    if (!button || (event.pointerType === 'mouse' && event.button !== 0)) return;
+    event.preventDefault(); button.setPointerCapture(event.pointerId); beginKey(button, event.pointerId);
+  });
+  for (const type of ['pointerup', 'pointercancel', 'lostpointercapture'] as const) {
+    area.addEventListener(type, event => endKey(event.pointerId));
+  }
+  for (const type of ['keydown', 'keyup'] as const) area.addEventListener(type, event => {
+    const button = (event.target as Element).closest<HTMLButtonElement>('button[data-hold]');
+    if (!button || ![' ', 'Enter'].includes(event.key)) return;
+    event.preventDefault();
+    const id = `${button.dataset.key}:${event.key}`;
+    if (type === 'keyup') endKey(id); else if (!event.repeat) beginKey(button, id);
+  });
+  area.addEventListener('focusout', event => {
+    for (const [id, key] of heldKeys) if (typeof id === 'string' && key.button === event.target) endKey(id);
+  });
+  area.addEventListener('contextmenu', event => event.preventDefault());
   area.addEventListener('touchstart', event => {
     for (const touch of Array.from(event.changedTouches)) {
       const button = (touch.target as Element).closest<HTMLButtonElement>('button');
-      if (button && button.id !== 'key-super') taps.set(touch.identifier, { button, x: touch.clientX, y: touch.clientY });
+      if (button && button.id !== 'key-super' && button.dataset.hold === undefined) taps.set(touch.identifier, { button, x: touch.clientX, y: touch.clientY });
     }
   }, { passive: true });
   area.addEventListener('touchmove', event => {
@@ -413,7 +474,7 @@ for (const id of ['keyboard', 'special-keys', 'native-tools']) {
       if (touch.clientX >= rect.left && touch.clientX < rect.right && touch.clientY >= rect.top && touch.clientY < rect.bottom) tap.button.click();
     }
   }, { passive: false });
-  area.addEventListener('touchcancel', () => taps.clear());
+  area.addEventListener('touchcancel', () => { taps.clear(); releaseHeldKeys(); });
 }
 for (const id of ['tracking-presets', 'scroll-presets']) {
   $(id).addEventListener('click', event => {
@@ -434,7 +495,7 @@ function fitViewport() {
     main.style.height = `${height}px`;
     main.style.top = `${viewport?.offsetTop || 0}px`;
     document.body.classList.toggle('compact-keyboard', height < 560);
-    document.body.classList.toggle('tight-keyboard', height < 300);
+    document.body.classList.toggle('tight-keyboard', height < 380);
   }
   document.body.classList.toggle('native-focused', document.activeElement === nativeInput);
 }

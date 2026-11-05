@@ -8,6 +8,7 @@ pub struct Page {
 pub fn page() -> &'static Page {
     static PAGE: OnceLock<Page> = OnceLock::new();
     PAGE.get_or_init(|| {
+        let theme = include_str!("../web/theme.js");
         let css = include_str!("../web/style.css");
         let fill = include_str!("../web/super-fill.js");
         let boot = include_str!("../web/boot.js");
@@ -26,17 +27,19 @@ pub fn page() -> &'static Page {
                 "<link rel=\"stylesheet\" href=\"/style.css\">",
                 &format!("<style>{css}</style>"),
             )
+            .replace("<script src=\"/theme.js\"></script>", &format!("<script>{theme}</script>"))
             .replace("<script src=\"/super-fill.js\"></script>", "")
             .replace(
                 "<script type=\"module\" src=\"/app.js\"></script>",
                 &format!("<script>{boot}</script><script>{fill}</script><script>{script}</script>"),
             );
         let policy = format!(
-            "style-src 'self' 'sha256-{}'; script-src 'self' 'sha256-{}' 'sha256-{}' 'sha256-{}'",
+            "style-src 'self' 'sha256-{}'; script-src 'self' 'sha256-{}' 'sha256-{}' 'sha256-{}' 'sha256-{}'",
             crate::crypto::sha256(css.as_bytes()),
             crate::crypto::sha256(boot.as_bytes()),
             crate::crypto::sha256(script.as_bytes()),
-            crate::crypto::sha256(fill.as_bytes())
+            crate::crypto::sha256(fill.as_bytes()),
+            crate::crypto::sha256(theme.as_bytes())
         );
         Page { html, policy }
     })
@@ -51,7 +54,7 @@ mod tests {
             "Embedded UI exceeded its 70 KB budget"
         );
         assert!(!page.html.contains("<link rel=\"stylesheet\""));
-        assert!(!page.html.contains("<script src=\"/super-fill.js\""));
+        assert!(!page.html.contains("<script src="));
         assert!(!page.html.contains("<script type=\"module\""));
         assert!(!page.html.contains("import {"));
         assert!(!page.html.contains("export class"));
@@ -69,7 +72,7 @@ mod tests {
                         .contains(&crate::crypto::sha256(content.as_bytes()))
                 );
             }
-            assert_eq!(count, if tag == "script" { 3 } else { 1 });
+            assert_eq!(count, if tag == "script" { 4 } else { 1 });
         }
     }
 }

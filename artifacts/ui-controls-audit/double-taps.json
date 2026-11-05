@@ -1,0 +1,231 @@
+{
+  "environment": "Chromium mobile emulation, mocked receiver; native keyboard viewport and 34px safe area simulated",
+  "errors": [],
+  "results": [
+    {
+      "name": "Double-tap: keyboard-toggle",
+      "after": {
+        "focus": "native-input",
+        "keyboard": true,
+        "settings": false,
+        "pad": {
+          "x": 0,
+          "y": 0,
+          "width": 390,
+          "height": 584.609375,
+          "bottom": 584.609375,
+          "display": "block"
+        },
+        "close": {
+          "x": 334,
+          "y": 594.609375,
+          "width": 44,
+          "height": 44,
+          "bottom": 638.609375,
+          "display": "grid"
+        },
+        "dock": {
+          "top": 0,
+          "bottom": 0,
+          "height": 0
+        },
+        "viewport": {
+          "height": 844,
+          "top": 0
+        },
+        "animations": 0
+      },
+      "packets": [
+        [
+          7
+        ],
+        [
+          7
+        ],
+        [
+          9,
+          79
+        ],
+        [
+          10,
+          79
+        ]
+      ],
+      "events": [
+        {
+          "type": "pointerdown",
+          "target": "svg",
+          "focus": "BODY",
+          "time": 200.09999999962747
+        },
+        {
+          "type": "pointerup",
+          "target": "svg",
+          "focus": "BODY",
+          "time": 200.80000000074506
+        },
+        {
+          "type": "focusin",
+          "target": "keyboard-toggle",
+          "focus": "keyboard-toggle",
+          "time": 204
+        },
+        {
+          "type": "click",
+          "target": "svg",
+          "focus": "keyboard-toggle",
+          "time": 204.09999999962747
+        },
+        {
+          "type": "focusout",
+          "target": "keyboard-toggle",
+          "focus": "BODY",
+          "time": 210.09999999962747
+        },
+        {
+          "type": "focusin",
+          "target": "native-input",
+          "focus": "native-input",
+          "time": 243.30000000074506
+        },
+        {
+          "type": "pointerdown",
+          "target": "BUTTON",
+          "focus": "native-input",
+          "time": 252.09999999962747
+        },
+        {
+          "type": "pointerup",
+          "target": "BUTTON",
+          "focus": "native-input",
+          "time": 253.30000000074506
+        }
+      ]
+    },
+    {
+      "name": "Double-tap: keyboard-close",
+      "after": {
+        "focus": "BODY",
+        "keyboard": false,
+        "settings": false,
+        "pad": {
+          "x": 0,
+          "y": 0,
+          "width": 390,
+          "height": 748,
+          "bottom": 748,
+          "display": "block"
+        },
+        "close": {
+          "x": 0,
+          "y": 0,
+          "width": 0,
+          "height": 0,
+          "bottom": 0,
+          "display": "grid"
+        },
+        "dock": {
+          "top": 774,
+          "bottom": 844,
+          "height": 70
+        },
+        "viewport": {
+          "height": 844,
+          "top": 0
+        },
+        "animations": 0
+      },
+      "packets": [
+        [
+          7
+        ]
+      ],
+      "events": [
+        {
+          "type": "pointerdown",
+          "target": "svg",
+          "focus": "BODY",
+          "time": 154.80000000074506
+        },
+        {
+          "type": "pointerup",
+          "target": "svg",
+          "focus": "BODY",
+          "time": 155.19999999925494
+        },
+        {
+          "type": "focusin",
+          "target": "keyboard-toggle",
+          "focus": "keyboard-toggle",
+          "time": 156.80000000074506
+        },
+        {
+          "type": "click",
+          "target": "svg",
+          "focus": "keyboard-toggle",
+          "time": 157
+        },
+        {
+          "type": "focusout",
+          "target": "keyboard-toggle",
+          "focus": "BODY",
+          "time": 159.30000000074506
+        },
+        {
+          "type": "focusin",
+          "target": "native-input",
+          "focus": "native-input",
+          "time": 160.5
+        },
+        {
+          "type": "pointerdown",
+          "target": "keyboard-close",
+          "focus": "native-input",
+          "time": 187.40000000037253
+        },
+        {
+          "type": "pointerup",
+          "target": "keyboard-close",
+          "focus": "native-input",
+          "time": 187.59999999962747
+        },
+        {
+          "type": "focusout",
+          "target": "native-input",
+          "focus": "BODY",
+          "time": 188.69999999925494
+        },
+        {
+          "type": "focusin",
+          "target": "keyboard-close",
+          "focus": "keyboard-close",
+          "time": 188.80000000074506
+        },
+        {
+          "type": "click",
+          "target": "keyboard-close",
+          "focus": "keyboard-close",
+          "time": 189.19999999925494
+        },
+        {
+          "type": "focusout",
+          "target": "keyboard-close",
+          "focus": "BODY",
+          "time": 203.69999999925494
+        },
+        {
+          "type": "pointerdown",
+          "target": "scroll-zone",
+          "focus": "BODY",
+          "time": 204.59999999962747
+        },
+        {
+          "type": "pointerup",
+          "target": "scroll-zone",
+          "focus": "BODY",
+          "time": 205.19999999925494
+        }
+      ]
+    }
+  ]
+}

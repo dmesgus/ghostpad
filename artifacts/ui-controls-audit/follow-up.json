@@ -1,0 +1,415 @@
+{
+  "environment": "Chromium mobile emulation, mocked receiver; native keyboard viewport and 34px safe area simulated",
+  "errors": [],
+  "results": [
+    {
+      "name": "Follow-up: close at visible height 220",
+      "closed": {
+        "focus": "keyboard-close",
+        "keyboard": false,
+        "settings": false,
+        "pad": {
+          "x": 0,
+          "y": 0,
+          "width": 390,
+          "height": 150,
+          "bottom": 150,
+          "display": "block"
+        },
+        "close": {
+          "x": 0,
+          "y": 0,
+          "width": 0,
+          "height": 0,
+          "bottom": 0,
+          "display": "grid"
+        },
+        "dock": {
+          "top": 176,
+          "bottom": 246,
+          "height": 70
+        },
+        "viewport": {
+          "height": 220,
+          "top": 0
+        },
+        "animations": 0
+      }
+    },
+    {
+      "name": "Follow-up: close at visible height 240",
+      "closed": {
+        "focus": "keyboard-close",
+        "keyboard": false,
+        "settings": false,
+        "pad": {
+          "x": 0,
+          "y": 0,
+          "width": 390,
+          "height": 150,
+          "bottom": 150,
+          "display": "block"
+        },
+        "close": {
+          "x": 0,
+          "y": 0,
+          "width": 0,
+          "height": 0,
+          "bottom": 0,
+          "display": "grid"
+        },
+        "dock": {
+          "top": 176,
+          "bottom": 246,
+          "height": 70
+        },
+        "viewport": {
+          "height": 240,
+          "top": 0
+        },
+        "animations": 0
+      }
+    },
+    {
+      "name": "Follow-up: close at visible height 320",
+      "closed": {
+        "focus": "keyboard-close",
+        "keyboard": false,
+        "settings": false,
+        "pad": {
+          "x": 0,
+          "y": 0,
+          "width": 390,
+          "height": 224,
+          "bottom": 224,
+          "display": "block"
+        },
+        "close": {
+          "x": 0,
+          "y": 0,
+          "width": 0,
+          "height": 0,
+          "bottom": 0,
+          "display": "grid"
+        },
+        "dock": {
+          "top": 250,
+          "bottom": 320,
+          "height": 70
+        },
+        "viewport": {
+          "height": 320,
+          "top": 0
+        },
+        "animations": 0
+      }
+    },
+    {
+      "name": "Follow-up: safe area second close tap",
+      "first": {
+        "focus": "keyboard-close",
+        "keyboard": true,
+        "settings": false,
+        "pad": {
+          "x": 0,
+          "y": 0,
+          "width": 390,
+          "height": 186.609375,
+          "bottom": 186.609375,
+          "display": "block"
+        },
+        "close": {
+          "x": 334,
+          "y": 196.609375,
+          "width": 44,
+          "height": 44,
+          "bottom": 240.609375,
+          "display": "grid"
+        },
+        "dock": {
+          "top": 0,
+          "bottom": 0,
+          "height": 0
+        },
+        "viewport": {
+          "height": 480,
+          "top": 0
+        },
+        "animations": 0
+      },
+      "second": {
+        "focus": "keyboard-close",
+        "keyboard": false,
+        "settings": false,
+        "pad": {
+          "x": 0,
+          "y": 0,
+          "width": 390,
+          "height": 350,
+          "bottom": 350,
+          "display": "block"
+        },
+        "close": {
+          "x": 0,
+          "y": 0,
+          "width": 0,
+          "height": 0,
+          "bottom": 0,
+          "display": "grid"
+        },
+        "dock": {
+          "top": 376,
+          "bottom": 446,
+          "height": 70
+        },
+        "viewport": {
+          "height": 480,
+          "top": 0
+        },
+        "animations": 0
+      }
+    },
+    {
+      "name": "Follow-up: safe area selecting grid",
+      "after": {
+        "focus": "grid-mode",
+        "keyboard": true,
+        "settings": false,
+        "pad": {
+          "x": 0,
+          "y": 0,
+          "width": 390,
+          "height": 186.609375,
+          "bottom": 186.609375,
+          "display": "block"
+        },
+        "close": {
+          "x": 334,
+          "y": 196.609375,
+          "width": 44,
+          "height": 44,
+          "bottom": 240.609375,
+          "display": "grid"
+        },
+        "dock": {
+          "top": 0,
+          "bottom": 0,
+          "height": 0
+        },
+        "viewport": {
+          "height": 480,
+          "top": 0
+        },
+        "animations": 0
+      },
+      "gridSelected": "false"
+    },
+    {
+      "name": "Follow-up: click settings handle while settings open",
+      "after": {
+        "focus": "settings-handle",
+        "keyboard": false,
+        "settings": false,
+        "pad": {
+          "x": 0,
+          "y": 0,
+          "width": 390,
+          "height": 748,
+          "bottom": 748,
+          "display": "block"
+        },
+        "close": {
+          "x": 0,
+          "y": 0,
+          "width": 0,
+          "height": 0,
+          "bottom": 0,
+          "display": "grid"
+        },
+        "dock": {
+          "top": 774,
+          "bottom": 844,
+          "height": 70
+        },
+        "viewport": {
+          "height": 844,
+          "top": 0
+        },
+        "animations": 0
+      }
+    },
+    {
+      "name": "Follow-up: short swipe state order",
+      "order": [
+        {
+          "event": "pointerup",
+          "target": "settings-handle",
+          "settings": true
+        },
+        {
+          "event": "click",
+          "target": "settings-handle",
+          "settings": false
+        }
+      ],
+      "after": {
+        "focus": "settings-handle",
+        "keyboard": false,
+        "settings": false,
+        "pad": {
+          "x": 0,
+          "y": 0,
+          "width": 390,
+          "height": 748,
+          "bottom": 748,
+          "display": "block"
+        },
+        "close": {
+          "x": 0,
+          "y": 0,
+          "width": 0,
+          "height": 0,
+          "bottom": 0,
+          "display": "grid"
+        },
+        "dock": {
+          "top": 774,
+          "bottom": 844,
+          "height": 70
+        },
+        "viewport": {
+          "height": 844,
+          "top": 0
+        },
+        "animations": 0
+      }
+    },
+    {
+      "name": "Follow-up: release cross after viewport changes",
+      "before": {
+        "focus": "native-input",
+        "keyboard": true,
+        "settings": false,
+        "pad": {
+          "x": 0,
+          "y": 0,
+          "width": 390,
+          "height": 120.609375,
+          "bottom": 120.609375,
+          "display": "block"
+        },
+        "close": {
+          "x": 334,
+          "y": 130.609375,
+          "width": 44,
+          "height": 44,
+          "bottom": 174.609375,
+          "display": "grid"
+        },
+        "dock": {
+          "top": 0,
+          "bottom": 0,
+          "height": 0
+        },
+        "viewport": {
+          "height": 380,
+          "top": 0
+        },
+        "animations": 0
+      },
+      "after": {
+        "focus": "BODY",
+        "keyboard": true,
+        "settings": false,
+        "pad": {
+          "x": 0,
+          "y": 0,
+          "width": 0,
+          "height": 0,
+          "bottom": 0,
+          "display": "none"
+        },
+        "close": {
+          "x": 334,
+          "y": 4,
+          "width": 44,
+          "height": 44,
+          "bottom": 48,
+          "display": "grid"
+        },
+        "dock": {
+          "top": 0,
+          "bottom": 0,
+          "height": 0
+        },
+        "viewport": {
+          "height": 379,
+          "top": 0
+        },
+        "animations": 0
+      },
+      "events": [
+        {
+          "type": "pointerdown",
+          "target": "svg",
+          "focus": "BODY",
+          "time": 139.90000000037253
+        },
+        {
+          "type": "pointerup",
+          "target": "svg",
+          "focus": "BODY",
+          "time": 140.2999999988824
+        },
+        {
+          "type": "focusin",
+          "target": "keyboard-toggle",
+          "focus": "keyboard-toggle",
+          "time": 141.7999999988824
+        },
+        {
+          "type": "click",
+          "target": "svg",
+          "focus": "keyboard-toggle",
+          "time": 142
+        },
+        {
+          "type": "focusout",
+          "target": "keyboard-toggle",
+          "focus": "BODY",
+          "time": 144.59999999962747
+        },
+        {
+          "type": "focusin",
+          "target": "native-input",
+          "focus": "native-input",
+          "time": 145.90000000037253
+        },
+        {
+          "type": "pointerdown",
+          "target": "keyboard-close",
+          "focus": "native-input",
+          "time": 172.7999999988824
+        },
+        {
+          "type": "pointerup",
+          "target": "keyboard-close",
+          "focus": "native-input",
+          "time": 191.19999999925494
+        },
+        {
+          "type": "focusout",
+          "target": "native-input",
+          "focus": "BODY",
+          "time": 191.90000000037253
+        },
+        {
+          "type": "click",
+          "target": "DIV",
+          "focus": "BODY",
+          "time": 192.40000000037253
+        }
+      ]
+    }
+  ]
+}

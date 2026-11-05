@@ -1,7 +1,7 @@
 :root {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  color: #111111;
-  background: #fff;
+  color: var(--foreground);
+  background: var(--surface);
   color-scheme: light;
   font-synthesis: none;
   -webkit-tap-highlight-color: transparent;
@@ -18,11 +18,68 @@
   --soft: #f5f5f5;
   --muted: #707070;
   --line: #e7e7e7;
-  --accent: #111111;
+  --accent: var(--primary);
+  --border-strong: #d4d4d4;
+  --pressed: #dedede;
+  --status-idle: #999;
+  --selection-shadow: #11111110;
+  --super-fill: #000;
+  --orb-body: #171717;
+  --orb-eyes: #fff;
+  --orb-active-body: #fff;
+  --orb-active-eyes: #111;
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --background: #141414;
+  --foreground: #ededed;
+  --primary: #ededed;
+  --primary-foreground: #141414;
+  --secondary: #b0b0b0;
+  --card: #202020;
+  --muted-surface: #292929;
+  --ring: #ededed40;
+  --surface: #292929;
+  --soft: #292929;
+  --muted: #b0b0b0;
+  --line: #3d3d3d;
+  --border-strong: #686868;
+  --pressed: #454545;
+  --status-idle: #858585;
+  --selection-shadow: #00000040;
+  --orb-body: #dedede;
+  --orb-eyes: #171717;
+}
+/* System appearance also works when scripts are unavailable. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) {
+  color-scheme: dark;
+  --background: #141414;
+  --foreground: #ededed;
+  --primary: #ededed;
+  --primary-foreground: #141414;
+  --secondary: #b0b0b0;
+  --card: #202020;
+  --muted-surface: #292929;
+  --ring: #ededed40;
+  --surface: #292929;
+  --soft: #292929;
+  --muted: #b0b0b0;
+  --line: #3d3d3d;
+  --border-strong: #686868;
+  --pressed: #454545;
+  --status-idle: #858585;
+  --selection-shadow: #00000040;
+  --orb-body: #dedede;
+  --orb-eyes: #171717;
+  }
 }
 * { box-sizing: border-box; }
 html, body { overflow: hidden; }
-body { margin: 0; overscroll-behavior: none; }
+/* Safari samples the page canvas for the area outside the viewport. */
+html { transition: background-color .5s cubic-bezier(.16, 1, .3, 1); }
+html[data-super-fill="true"] { background-color: var(--super-fill); }
+body { margin: 0; min-height: 100vh; background: inherit; overscroll-behavior: none; }
 button, input, textarea { font: inherit; }
 button { border: 0; cursor: pointer; color: inherit; touch-action: manipulation; }
 button:focus-visible, summary:focus-visible, input:focus-visible, textarea:focus-visible {
@@ -52,40 +109,53 @@ main {
   padding-bottom: env(safe-area-inset-bottom);
   overflow: hidden;
 }
+/* Keep the controls' backdrop separate from the browser's top-edge color.
+   The fixed frame itself stays transparent for Safari's toolbar sampling. */
+main::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background: var(--background);
+  border-top: 32px solid var(--surface);
+  pointer-events: none;
+}
 /* The fill is decorative: pointer hit testing always reaches the original zones. */
 #super-fill-root { position: absolute; inset: 0; overflow: hidden; pointer-events: none; border-radius: inherit; }
 .super-fill {
   position: absolute;
   border-radius: 50%;
-  background: #000;
+  background: var(--super-fill);
   transform: scale(0);
   transition: transform .5s cubic-bezier(.16, 1, .3, 1);
 }
 .super-fill[data-active=true] { transform: scale(1); }
-.orb-body { fill: #171717; stroke: #e8e8e8; stroke-width: .5; transition: fill .15s; }
-.orb-eyes { fill: #fff; transform-origin: 20px 19px; transition: fill .15s, transform .15s; }
-.super-orb[data-active=true] .orb-body { fill: #fff; }
-.super-orb[data-active=true] .orb-eyes { fill: #111; transform: scaleY(.75); }
+.orb-body { fill: var(--orb-body); stroke: var(--surface); stroke-width: .5; transition: fill .15s; }
+.orb-eyes { fill: var(--orb-eyes); transform-origin: 20px 19px; transition: fill .15s, transform .15s; }
+.super-orb[data-active=true] .orb-body { fill: var(--orb-active-body); }
+.super-orb[data-active=true] .orb-eyes { fill: var(--orb-active-eyes); transform: scaleY(.75); }
 @media (prefers-reduced-motion: reduce) {
-  .super-fill, .orb-body, .orb-eyes { transition: none; }
+  html, .super-fill, .orb-body, .orb-eyes { transition: none; }
 }
 /* The SVG rests between Super state changes; no canvas or blending pass. */
 .super-orb {
   position: absolute;
   left: 18px;
-  bottom: calc((var(--thumb-height) - 40px) / 2);
+  bottom: var(--orb-bottom);
   width: 40px;
   height: 40px;
   pointer-events: none;
 }
 /* Only the small Super marker sits on the otherwise uninterrupted surface. */
 #pad {
-  --thumb-height: 80px;
+  --thumb-height: clamp(68px, 20%, 136px);
+  --right-height: clamp(56px, 14%, 96px);
+  --orb-bottom: 32px;
   isolation: isolate;
   position: relative;
   flex: 1;
   min-height: max(150px, env(safe-area-inset-top));
-  border-radius: 0 0 32px 32px;
+  border-radius: 32px;
   background: var(--surface);
   touch-action: none;
   user-select: none;
@@ -95,23 +165,34 @@ main {
 }
 .pad-zones {
   position: absolute;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  display: grid;
-  grid-template-columns: 1fr 1fr;
+  inset: 0;
+  pointer-events: none;
 }
-.pad-zone { height: var(--thumb-height); background: transparent; touch-action: none; }
-.pad-zone:focus-visible { outline-offset: -6px; border-radius: 12px; }
+/* Rounded corners define the actual hit areas, including on a transparent
+   button. The lane between them stays available for tracking to the bottom. */
+.pad-zone {
+  position: absolute;
+  bottom: 0;
+  width: 32%;
+  max-width: 160px;
+  height: var(--thumb-height);
+  padding: 0;
+  background: transparent;
+  touch-action: none;
+  pointer-events: auto;
+}
+#mod-super { left: 0; border-top-right-radius: 100% 50%; }
+#right-click { right: 0; width: 24%; max-width: 108px; height: var(--right-height); border-top-left-radius: 100% 50%; }
+.pad-zone:focus-visible { outline-offset: -6px; }
 #scroll-zone {
   position: absolute;
-  top: 58px;
-  bottom: var(--thumb-height);
+  top: min(58px, 10%);
+  bottom: var(--right-height);
   right: 0;
-  width: 44px;
+  width: 56px;
   touch-action: none;
 }
-#pad.scroll-left #scroll-zone { left: 0; right: auto; }
+#pad.scroll-left #scroll-zone { left: 0; right: auto; bottom: var(--thumb-height); }
 .grabber {
   display: grid;
   place-items: center;
@@ -120,7 +201,7 @@ main {
   flex-shrink: 0;
   touch-action: none;
 }
-.grabber span { height: 4px; width: 30px; border-radius: 4px; background: #d4d4d4; }
+.grabber span { height: 4px; width: 30px; border-radius: 4px; background: var(--border-strong); }
 .dock {
   display: flex;
   align-items: center;
@@ -149,14 +230,14 @@ main {
 .dock-status { display: flex; flex-direction: column; align-items: center; gap: 5px; min-width: 0; }
 .brand { font-size: 14px; font-weight: 600; letter-spacing: -.4px; }
 .status { display: flex; align-items: center; gap: 5px; color: var(--muted); font-size: 10px; }
-.status i { height: 5px; width: 5px; border-radius: 50%; background: #999999; }
-.status i.online { background: #111111; }
+.status i { height: 5px; width: 5px; border-radius: 50%; background: var(--status-idle); }
+.status i.online { background: var(--accent); }
 #welcome { flex-shrink: 0; text-align: center; padding: 4px 24px 14px; }
 #hint, noscript { font-size: 12px; line-height: 1.5; color: var(--muted); margin: 0 auto; max-width: 360px; }
 body.connected #welcome { display: none; }
 #reload { background: var(--soft); border-radius: 12px; padding: 12px 18px; margin-top: 10px; font-size: 12px; }
 .sheet {
-  background: #fff;
+  background: var(--background);
   border: 0;
   position: relative;
   margin: 0 auto;
@@ -182,7 +263,7 @@ dialog:not([open]) { display: none; }
 .setting-card p { font-size: 12px; line-height: 1.55; color: var(--muted); margin: 0 0 14px; }
 .segmented { display: flex; background: var(--soft); border-radius: 14px; padding: 3px; gap: 3px; }
 .segmented button { flex: 1; border-radius: 11px; background: transparent; font-size: 12px; min-height: 38px; padding: 8px 4px; font-weight: 500; color: var(--muted); }
-.segmented button[aria-pressed=true] { background: #fff; color: #111111; box-shadow: 0 1px 4px #11111110; }
+.segmented button[aria-pressed=true] { background: var(--card); color: var(--foreground); box-shadow: 0 1px 4px var(--selection-shadow); }
 summary { font-size: 12px; color: var(--accent); padding: 16px 0 0; cursor: pointer; }
 details label { display: flex; justify-content: space-between; font-size: 12px; margin-top: 16px; }
 input[type=range] { width: 100%; accent-color: var(--accent); margin: 14px 0 2px; }
@@ -215,26 +296,28 @@ input[type=checkbox] { accent-color: var(--accent); width: 20px; height: 20px; }
   font-size: 13px;
 }
 .modifier-row button, .special-keys .key-row button { white-space: nowrap; }
-.modifier-row button[aria-pressed=true] { color: #fff; background: #111111; border-color: #111111; }
-.modifier-row .primary, .native-tools .primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+.modifier-row button[aria-pressed=true] { color: var(--primary-foreground); background: var(--accent); border-color: var(--accent); }
+.modifier-row .primary, .native-tools .primary { background: var(--accent); color: var(--primary-foreground); border-color: var(--accent); }
 .modifier-row .primary { flex: 1.5; }
-.key-row button:active, .modifier-row button:active { background: #dedede; color: #111; }
+.key-row button:active, .modifier-row button:active { background: var(--pressed); color: var(--foreground); }
 #key-super { touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
-textarea { display: block; width: 100%; height: 56px; resize: none; border: 1px solid #d4d4d4; border-radius: 14px; background: #fff; padding: 14px 12px; font-size: 16px; line-height: 26px; color: inherit; touch-action: auto; }
+[data-hold] { touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+.key-row button.held, .modifier-row button.held, #keyboard .key-row button.held { background: var(--accent); color: var(--primary-foreground); border-color: var(--accent); }
+textarea { display: block; width: 100%; height: 56px; resize: none; border: 1px solid var(--border-strong); border-radius: 14px; background: var(--background); padding: 14px 12px; font-size: 16px; line-height: 26px; color: inherit; touch-action: auto; }
 textarea::placeholder { color: var(--muted); }
 textarea:focus { outline: none; border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
 .typing-help { font-size: 11px; line-height: 1.4; color: var(--muted); margin: 8px 2px 0; }
 #shortcut-help { min-height: 31px; margin-top: 6px; }
-.native-tools { flex-shrink: 0; margin: 0; }
+.native-tools { display: grid; grid-template-columns: repeat(5, minmax(44px, 1fr)); gap: 4px; flex-shrink: 0; margin: 0; }
 .native-tools button { min-width: 44px; font-size: 15px; height: 48px; }
-.native-tools button:last-child { flex: 1.2; }
+.native-tools button[data-key="44"] { grid-column: span 2; }
 .key-row button[data-key="44"] { flex: 3; }
-#keyboard .key-row button { background: #fff; font-size: 14px; }
+#keyboard .key-row button { background: var(--card); font-size: 14px; }
 #keyboard .key-row button:active { background: var(--surface); }
 #keyboard .key-row:first-child { margin-top: 0; }
 #keyboard .key-row:last-child { margin-bottom: 0; }
 body.keyboard-open #keyboard-panel { max-height: none; }
-body.keyboard-open #pad { min-height: 90px; --thumb-height: 54px; }
+body.keyboard-open #pad { min-height: 110px; --thumb-height: 68px; --right-height: 56px; --orb-bottom: 14px; }
 body.keyboard-open .dock, body.keyboard-open .grabber { display: none; }
 body.keyboard-open #welcome, body.settings-open #welcome { display: none; }
 body.keyboard-open.native-focused main { padding-bottom: 0; }
@@ -243,8 +326,14 @@ body.keyboard-open.tight-keyboard #pad { display: none; }
 body.keyboard-open.grid-mode.compact-keyboard #keyboard-panel,
 body.keyboard-open.tight-keyboard #keyboard-panel { flex: 1; padding-top: max(8px, env(safe-area-inset-top)); }
 body.keyboard-open.grid-mode.compact-keyboard #keyboard-panel .sheet-scroll { flex: 1; }
+body.keyboard-open.tight-keyboard #keyboard-panel { padding-top: max(4px, env(safe-area-inset-top)); padding-bottom: 4px; }
+body.keyboard-open.tight-keyboard .keyboard-toolbar { margin-bottom: 4px; }
+body.keyboard-open.tight-keyboard #keyboard-panel .sheet-scroll { flex: 1; }
+body.keyboard-open.tight-keyboard #native-panel .typing-help { margin-top: 4px; }
+body.keyboard-open.tight-keyboard .native-tools button { height: 44px; }
+body.keyboard-open.tight-keyboard textarea { height: 44px; padding: 8px 12px; }
 @media (max-height: 500px) {
-  #pad { min-height: 110px; --thumb-height: 54px; }
+  #pad { min-height: 130px; --orb-bottom: 14px; }
   .dock { height: 56px; padding-bottom: 6px; }
   .grabber { min-height: 20px; }
   .sheet { max-height: 65%; }

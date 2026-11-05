@@ -1,5 +1,4 @@
 "use strict";
-// Decorative state changes only: no frame loop, pointer tracking, or framework.
 (() => {
     const pad = document.getElementById('pad');
     const zone = document.getElementById('mod-super');
@@ -8,16 +7,12 @@
     let active = false;
     let origin = { x: null, y: null };
     const measure = () => {
-        var _a, _b;
         const rect = pad.getBoundingClientRect();
-        const button = origin.x === null || origin.y === null ? zone.getBoundingClientRect() : null;
-        const x = Math.max(0, Math.min(rect.width, ((_a = origin.x) !== null && _a !== void 0 ? _a : button.x + button.width / 2) - rect.x));
-        const y = Math.max(0, Math.min(rect.height, ((_b = origin.y) !== null && _b !== void 0 ? _b : button.y + button.height / 2) - rect.y));
-        const size = Math.ceil(2 * Math.max(Math.hypot(x, y), Math.hypot(rect.width - x, y), Math.hypot(x, rect.height - y), Math.hypot(rect.width - x, rect.height - y)));
-        fill.style.width = fill.style.height = `${size}px`;
-        fill.style.left = `${x}px`;
-        fill.style.top = `${y}px`;
-        fill.style.marginLeft = fill.style.marginTop = `${-size / 2}px`;
+        const button = zone.getBoundingClientRect();
+        const x = Math.max(0, Math.min(rect.width, (origin.x === null ? button.x + button.width / 2 : origin.x) - rect.x));
+        const y = Math.max(0, Math.min(rect.height, (origin.y === null ? button.y + button.height / 2 : origin.y) - rect.y));
+        const size = Math.ceil(2 * Math.hypot(Math.max(x, rect.width - x), Math.max(y, rect.height - y)));
+        fill.style.cssText = `width:${size}px;height:${size}px;left:${x}px;top:${y}px;margin:${-size / 2}px`;
     };
     const observer = new ResizeObserver(() => { if (active)
         measure(); });
