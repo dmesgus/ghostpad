@@ -11,11 +11,7 @@
     "rootDir": "web/src",
     "outDir": "web",
     "noEmitOnError": true,
-    "paths": {
-      "@/*": [
-        "./*"
-      ]
-    }
+    "types": []
   },
   "include": [
     "web/src/*.ts"

@@ -4,25 +4,12 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build:web": "tsc -p tsconfig.json && tsc -p tsconfig.ui.json && node scripts/build-ui.mjs && tailwindcss -i web/src/style.css -o web/style.css --minify",
-    "test": "node tests/gestures.test.mjs && node tests/startup.test.mjs && node tests/text.test.mjs",
+    "build:web": "tsc -p tsconfig.json && node scripts/build-ui.mjs",
+    "test": "node tests/gestures.test.mjs && node tests/scroll.test.mjs && node tests/startup.test.mjs && node tests/text.test.mjs",
     "test:browser": "node tests/browser.mjs"
   },
   "devDependencies": {
-    "@tailwindcss/cli": "^4.3.4",
-    "@types/node": "^26.6.6",
-    "@types/react": "^19.3.0",
-    "@types/react-dom": "^19.3.0",
-    "esbuild": "^0.28.2",
     "playwright-core": "1.64.1",
-    "tailwindcss": "^4.3.4",
     "typescript": "7.0.2"
-  },
-  "dependencies": {
-    "clsx": "^2.1.1",
-    "motion": "^14.9.1",
-    "react": "^19.3.1",
-    "react-dom": "^19.3.1",
-    "tailwind-merge": "^3.7.0"
   }
 }

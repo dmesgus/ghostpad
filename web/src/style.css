@@ -1,30 +1,3 @@
-@layer theme, base, components, utilities;
-@import "tailwindcss/theme.css" layer(theme);
-@import "tailwindcss/utilities.css" layer(utilities);
-@source "../../components";
-@source "./super-fill.tsx";
-@custom-variant dark (&:is(.dark *));
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --color-primary: var(--primary);
-  --color-primary-foreground: var(--primary-foreground);
-  --color-secondary: var(--secondary);
-  --color-secondary-foreground: var(--foreground);
-  --color-card: var(--card);
-  --color-card-foreground: var(--foreground);
-  --color-popover: var(--card);
-  --color-popover-foreground: var(--foreground);
-  --color-muted: var(--muted-surface);
-  --color-muted-foreground: var(--muted);
-  --color-accent: var(--soft);
-  --color-accent-foreground: var(--foreground);
-  --color-border: var(--line);
-  --color-input: var(--line);
-  --color-ring: var(--ring);
-  --color-destructive: #dc2626;
-}
-
 :root {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   color: #111111;
@@ -48,6 +21,7 @@
   --accent: #111111;
 }
 * { box-sizing: border-box; }
+html, body { overflow: hidden; }
 body { margin: 0; overscroll-behavior: none; }
 button, input, textarea { font: inherit; }
 button { border: 0; cursor: pointer; color: inherit; touch-action: manipulation; }
@@ -67,6 +41,10 @@ button:focus-visible, summary:focus-visible, input:focus-visible, textarea:focus
   white-space: nowrap;
 }
 main {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
   height: 100vh;
   height: 100dvh;
   display: flex;
@@ -76,8 +54,22 @@ main {
 }
 /* The fill is decorative: pointer hit testing always reaches the original zones. */
 #super-fill-root { position: absolute; inset: 0; overflow: hidden; pointer-events: none; border-radius: inherit; }
-.super-fill { background: #000; }
-/* Difference blending inverts the face exactly where the wave passes beneath it. */
+.super-fill {
+  position: absolute;
+  border-radius: 50%;
+  background: #000;
+  transform: scale(0);
+  transition: transform .5s cubic-bezier(.16, 1, .3, 1);
+}
+.super-fill[data-active=true] { transform: scale(1); }
+.orb-body { fill: #171717; stroke: #e8e8e8; stroke-width: .5; transition: fill .15s; }
+.orb-eyes { fill: #fff; transform-origin: 20px 19px; transition: fill .15s, transform .15s; }
+.super-orb[data-active=true] .orb-body { fill: #fff; }
+.super-orb[data-active=true] .orb-eyes { fill: #111; transform: scaleY(.75); }
+@media (prefers-reduced-motion: reduce) {
+  .super-fill, .orb-body, .orb-eyes { transition: none; }
+}
+/* The SVG rests between Super state changes; no canvas or blending pass. */
 .super-orb {
   position: absolute;
   left: 18px;
@@ -85,7 +77,6 @@ main {
   width: 40px;
   height: 40px;
   pointer-events: none;
-  mix-blend-mode: difference;
 }
 /* Only the small Super marker sits on the otherwise uninterrupted surface. */
 #pad {
@@ -205,51 +196,56 @@ input[type=checkbox] { accent-color: var(--accent); width: 20px; height: 20px; }
 .gesture-guide dd { color: var(--muted); margin: 3px 0 0; }
 .actions { display: flex; gap: 8px; }
 .actions button { background: var(--soft); border-radius: 12px; padding: 12px; min-height: 44px; font-size: 12px; flex: 1; }
-.keyboard-choice { margin: 0 20px 12px; flex-shrink: 0; }
-.special-keys { background: var(--soft); border-radius: 16px; padding: 8px; }
-#keyboard-panel > .special-keys { margin: 0 20px 12px; flex-shrink: 0; }
-.modifier-row, .key-row { display: flex; gap: 5px; margin: 5px 0; }
+/* One mode switch, a scrollable key area, and controls within thumb reach. */
+#keyboard-panel { padding: 10px max(12px, env(safe-area-inset-right)) 8px max(12px, env(safe-area-inset-left)); }
+.keyboard-toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; flex-shrink: 0; }
+.keyboard-choice { flex: 1; }
+.keyboard-choice button { min-height: 38px; }
+#keyboard-panel .sheet-scroll { min-height: 0; padding: 0 0 8px; }
+.special-keys { flex-shrink: 0; padding-top: 8px; border-top: 1px solid var(--line); }
+.modifier-row, .key-row { display: flex; gap: 4px; margin: 4px 0; }
 .modifier-row button, .key-row button {
-  background: #fff;
+  background: var(--soft);
   border: 1px solid var(--line);
   border-radius: 9px;
   min-width: 0;
   flex: 1;
-  height: 40px;
+  height: 44px;
   padding: 0 3px;
-  font-size: 12px;
+  font-size: 13px;
 }
 .modifier-row button, .special-keys .key-row button { white-space: nowrap; }
 .modifier-row button[aria-pressed=true] { color: #fff; background: #111111; border-color: #111111; }
-.modifier-row .primary { flex: 1.5; background: var(--accent); color: #fff; border-color: var(--accent); }
+.modifier-row .primary, .native-tools .primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+.modifier-row .primary { flex: 1.5; }
+.key-row button:active, .modifier-row button:active { background: #dedede; color: #111; }
 #key-super { touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
-textarea { display: block; width: 100%; resize: none; border: 1px solid #d4d4d4; border-radius: 14px; background: #fff; min-height: 72px; padding: 22px 12px; font-size: 16px; line-height: 1.5; color: inherit; touch-action: auto; }
-textarea::placeholder { color: var(--muted); text-align: center; }
-textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px #11111112; }
-.typing-help { font-size: 10px; line-height: 1.5; color: var(--muted); margin: 8px 2px 0; }
+textarea { display: block; width: 100%; height: 56px; resize: none; border: 1px solid #d4d4d4; border-radius: 14px; background: #fff; padding: 14px 12px; font-size: 16px; line-height: 26px; color: inherit; touch-action: auto; }
+textarea::placeholder { color: var(--muted); }
+textarea:focus { outline: none; border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.typing-help { font-size: 11px; line-height: 1.4; color: var(--muted); margin: 8px 2px 0; }
+#shortcut-help { min-height: 31px; margin-top: 6px; }
+.native-tools { flex-shrink: 0; margin: 0; }
+.native-tools button { min-width: 44px; font-size: 15px; height: 48px; }
+.native-tools button:last-child { flex: 1.2; }
 .key-row button[data-key="44"] { flex: 3; }
-#keyboard .key-row button { font-size: 12px; height: 34px; }
+#keyboard .key-row button { background: #fff; font-size: 14px; }
+#keyboard .key-row button:active { background: var(--surface); }
+#keyboard .key-row:first-child { margin-top: 0; }
+#keyboard .key-row:last-child { margin-bottom: 0; }
 body.keyboard-open #keyboard-panel { max-height: none; }
 body.keyboard-open #pad { min-height: 90px; --thumb-height: 54px; }
-body.keyboard-open .dock { height: 56px; padding-bottom: 6px; }
-body.keyboard-open .grabber { min-height: 20px; }
+body.keyboard-open .dock, body.keyboard-open .grabber { display: none; }
 body.keyboard-open #welcome, body.settings-open #welcome { display: none; }
-body.keyboard-open.compact-keyboard #pad, body.keyboard-open.compact-keyboard .dock, body.keyboard-open.compact-keyboard .grabber { display: none; }
-body.keyboard-open.compact-keyboard #keyboard-panel { flex: 1; padding-top: max(8px, env(safe-area-inset-top)); }
-@media (max-height: 700px) {
-  body.keyboard-open .sheet-heading { padding-bottom: 8px; }
-  body.keyboard-open .keyboard-choice { margin-bottom: 8px; }
-  body.keyboard-open #keyboard-panel > .special-keys { margin-bottom: 8px; }
-  body.keyboard-open .sheet-scroll { padding-bottom: 6px; }
-  #keyboard .key-row button { height: 32px; }
-  body.keyboard-open .modifier-row button, body.keyboard-open .special-keys .key-row button { height: 38px; }
-}
+body.keyboard-open.native-focused main { padding-bottom: 0; }
+body.keyboard-open.grid-mode.compact-keyboard #pad,
+body.keyboard-open.tight-keyboard #pad { display: none; }
+body.keyboard-open.grid-mode.compact-keyboard #keyboard-panel,
+body.keyboard-open.tight-keyboard #keyboard-panel { flex: 1; padding-top: max(8px, env(safe-area-inset-top)); }
+body.keyboard-open.grid-mode.compact-keyboard #keyboard-panel .sheet-scroll { flex: 1; }
 @media (max-height: 500px) {
   #pad { min-height: 110px; --thumb-height: 54px; }
   .dock { height: 56px; padding-bottom: 6px; }
   .grabber { min-height: 20px; }
   .sheet { max-height: 65%; }
-  body.keyboard-open #pad, body.keyboard-open .dock, body.keyboard-open .grabber { display: none; }
-  body.keyboard-open #keyboard-panel { flex: 1; padding-top: max(8px, env(safe-area-inset-top)); }
-  body.keyboard-open textarea { min-height: 48px; padding: 10px 12px; }
 }

@@ -12,6 +12,43 @@ test('cancellation releases drag without click',()=>{const {g,events}=setup();g.
 test('second finger releases an active drag',()=>{const {g,events}=setup();g.update([p()],0);g.hold(400);g.update([p(),p(20)],450);g.update([],500);assert.deepEqual(events,[{type:'down'},{type:'up'}]);});
 test('three-finger tap does not toggle a modifier',()=>{const {g,events}=setup();g.update([p(),p(20),p(30)],0);g.update([],100);assert.deepEqual(events,[]);});
 test('moving finger cannot initiate hold',()=>{const {g,events}=setup();g.update([p()],0);g.update([p(20)],100);g.hold(400);assert.equal(events.some(e=>e.type==='down'),false);});
+test('small cursor corrections never turn into a click or a hold-drag',()=>{
+ for(const distance of [2,3,5,8])for(const hold of [false,true]){
+  const {g,events}=setup();g.update([p()],0);g.update([p(distance)],50);
+  if(hold)g.hold(400);g.update([],hold?450:100);
+  assert.deepEqual(events,[{type:'move',dx:distance,dy:0}]);
+ }
+});
+test('landing jitter keeps the cursor still and preserves an ordinary tap',()=>{
+ const {g,events}=setup();g.update([p(100,100)],0);
+ for(let i=0;i<12;i++)g.update([p(100+i%2,100+i%2)],10+i*10);
+ g.update([],180);assert.deepEqual(events,[{type:'left'}]);
+});
+test('starting movement retains its full distance and then every fractional correction',()=>{
+ const {g,events}=setup();g.update([p()],0);g.update([p(.5)],5);g.update([p(1)],10);
+ assert.deepEqual(events,[]);g.update([p(2)],15);
+ g.update([p(2.25,-.5)],20);g.update([p(2,-.25)],25);g.update([],30);
+ assert.deepEqual(events,[{type:'move',dx:2,dy:0},{type:'move',dx:.25,dy:-.5},{type:'move',dx:-.25,dy:.25}]);
+});
+test('fast swipes start on the first movement and repeated strokes never drag',()=>{
+ const {g,events}=setup();
+ for(let i=0;i<3;i++){
+  g.update([p(200,200)],i*40);g.update([p(230,220)],i*40+5);
+  assert.equal(events.length,i+1);g.update([],i*40+10);
+ }
+ assert.deepEqual(events,Array.from({length:3},()=>({type:'move',dx:30,dy:20})));
+});
+test('a small correction does not arm tap-drag on the next stroke',()=>{
+ const {g,events}=setup();g.update([p()],0);g.update([p(3)],20);g.update([],40);
+ g.update([p(100)],60);g.update([p(110)],80);g.update([],100);
+ assert.deepEqual(events,[{type:'move',dx:3,dy:0},{type:'move',dx:10,dy:0}]);
+});
+test('jitter while holding Super does not accidentally start moving a window',()=>{
+ const events=[],g=new Gestures(e=>events.push(e),()=>true);g.update([p()],0);
+ for(let i=0;i<10;i++)g.update([p(i%2)],10+i*10);
+ assert.deepEqual(events,[]);g.update([p(10)],120);g.update([],150);
+ assert.deepEqual(events,[{type:'down'},{type:'move',dx:10,dy:0},{type:'up'}]);
+});
 test('slow press without hold does not click',()=>{const {g,events}=setup();g.update([p()],0);g.update([],500);assert.deepEqual(events,[]);});
 
 const firstTap=g=>{g.update([p(100,100)],0);g.update([],50);};

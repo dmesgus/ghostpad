@@ -2,9 +2,9 @@
 const { chromium } = await import(process.env.PLAYWRIGHT_MODULE || 'playwright-core');
 import { readFile, mkdir } from 'node:fs/promises';
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
+import { browserPage } from './support/browser-page.mjs';
 const root = new URL('../', import.meta.url);
-const browser = await chromium.launch({executablePath: process.env.CHROMIUM_PATH || '/usr/bin/chromium', args:['--no-sandbox','--enable-unsafe-swiftshader']});
+const browser = await chromium.launch({executablePath: process.env.CHROMIUM_PATH || '/usr/bin/chromium', args:['--no-sandbox']});
 try {
  const context = await browser.newContext({viewport:{width:390,height:844},isMobile:true,hasTouch:true,deviceScaleFactor:2});
  const page = await context.newPage(), errors=[], packets=[];
@@ -12,17 +12,10 @@ try {
  await page.route('http://ghostpad.test/**', async route=>{
   const path=new URL(route.request().url()).pathname;
   const name=path==='/'?'index.html':path.slice(1);
-  if (!['index.html','style.css','app.js','gestures.js','text.js','icon.svg'].includes(name)) return route.fulfill({status:404});
+  if (!['index.html','style.css','app.js','gestures.js','scroll.js','text.js','icon.svg'].includes(name)) return route.fulfill({status:404});
   if (name === 'index.html') {
-   const css=await readFile(new URL('web/style.css',root),'utf8'),boot=await readFile(new URL('web/boot.js',root),'utf8');
-   const fill=await readFile(new URL('web/super-fill.js',root),'utf8');
-   const gestures=(await readFile(new URL('web/gestures.js',root),'utf8')).replace('export class Gestures','class Gestures');
-   const text=(await readFile(new URL('web/text.js',root),'utf8')).replaceAll('export function','function');
-   const app=(await readFile(new URL('web/app.js',root),'utf8')).replace("import { Gestures } from './gestures.js';",'').replace("import { textEdit, normalizeText } from './text.js';",'');
-   const script=`(function () {\n${gestures}\n${text}\n${app}\n})();`;
-   const html=(await readFile(new URL('web/index.html',root),'utf8')).replace('<link rel="stylesheet" href="/style.css">',()=>`<style>${css}</style>`).replace('<script src="/super-fill.js"></script>','').replace('<script type="module" src="/app.js"></script>',()=>`<script>${boot}</script><script>${fill}</script><script>${script}</script>`);
-   const hash=s=>createHash('sha256').update(s).digest('base64');
-   return route.fulfill({contentType:'text/html',body:html,headers:{'Content-Security-Policy':`default-src 'self'; connect-src 'self' ws://ghostpad.test; style-src 'self' 'sha256-${hash(css)}'; script-src 'self' 'sha256-${hash(boot)}' 'sha256-${hash(script)}' 'sha256-${hash(fill)}'`}});
+   const {html,policy}=await browserPage(name=>readFile(new URL(`web/${name}`,root),'utf8'));
+   return route.fulfill({contentType:'text/html',body:html,headers:{'Content-Security-Policy':policy}});
   }
   const type=name.endsWith('.js')?'text/javascript':name.endsWith('.css')?'text/css':name.endsWith('.svg')?'image/svg+xml':'text/html';
   await route.fulfill({contentType:type,body:await readFile(new URL(`web/${name}`,root))});
@@ -34,28 +27,23 @@ try {
   });
  });
  await page.addInitScript(()=>{
-  window.orbDraws=0;
-  const draw=WebGLRenderingContext.prototype.drawArrays;
-  WebGLRenderingContext.prototype.drawArrays=function(...args){window.orbDraws++;return draw.apply(this,args);};
+  window.decorativeFrames=0;
+  const raf=window.requestAnimationFrame;
+  window.requestAnimationFrame=callback=>{window.decorativeFrames++;return raf(callback);};
+  HTMLCanvasElement.prototype.getContext=function(){throw Error('Canvas is not needed for Ghostpad');};
  });
  await page.goto(`http://ghostpad.test/#key=${'a'.repeat(64)}`);
  await page.waitForFunction(()=>document.getElementById('status').textContent==='Preview');
  await page.waitForSelector('#super-fill-root .origin-fill', {state:'attached'});
- await page.waitForSelector('[data-slot="live-orb"][data-renderer="webgl"]');
- await page.waitForFunction(()=>window.orbDraws>1);
  const orb=page.locator('[data-slot="live-orb"]');
  const orbBox=await orb.boundingBox();
  const orbPoint=[orbBox.x+orbBox.width/2,orbBox.y+orbBox.height/2];
- assert.equal(await page.evaluate(([x,y])=>document.elementFromPoint(x,y).id,orbPoint),'mod-super','Touching the orb must reach the original Super zone');
- assert.equal(await orb.evaluate(el=>getComputedStyle(el.parentElement).mixBlendMode),'difference');
- // A touch makes the gaze respond without moving the character or sending pad packets.
- await page.evaluate(()=>window.dispatchEvent(new PointerEvent('pointermove',{clientX:300,clientY:100})));
- await page.waitForFunction(()=>{
-  const gl=document.querySelector('[data-slot="live-orb"] canvas').getContext('webgl');
-  const program=gl.getParameter(gl.CURRENT_PROGRAM);
-  return gl.getUniform(program,gl.getUniformLocation(program,'u_look'))[0]>.2;
- });
- assert.deepEqual(await orb.boundingBox(),orbBox,'Only the eyes should move');
+ assert.equal(await page.evaluate(([x,y])=>document.elementFromPoint(x,y).id,orbPoint),'mod-super');
+ assert.equal(await page.locator('canvas').count(),0);
+ assert.equal(await orb.evaluate(el=>getComputedStyle(el.parentElement).mixBlendMode),'normal');
+ const idleFrames=await page.evaluate(()=>window.decorativeFrames);
+ await page.waitForTimeout(200);
+ assert.equal(await page.evaluate(()=>window.decorativeFrames),idleFrames,'Idle UI must schedule no animation frames');
  const fillActive=()=>page.locator('#super-fill-root .origin-fill').getAttribute('data-active');
  const waitForFill=scale=>page.waitForFunction(expected=>{
   const el=document.querySelector('#super-fill-root .origin-fill');
@@ -66,6 +54,26 @@ try {
  assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
  const cdp=await context.newCDPSession(page);
  const touch=async(type,points)=>cdp.send('Input.dispatchTouchEvent',{type,touchPoints:points.map(([x,y],id)=>({x,y,id}))});
+ // A precise correction must respond while the finger is down, with no click on lift.
+ const preciseFrom=packets.length;
+ await touch('touchStart',[[120,250]]);await touch('touchMove',[[125,250]]);await page.waitForTimeout(30);
+ assert.deepEqual(packets.slice(preciseFrom).filter(p=>p[0]!==8).map(p=>p[0]),[1],'Small corrections must respond before lifting');
+ await page.waitForTimeout(420);await touch('touchEnd',[]);await page.waitForTimeout(30);
+ assert.deepEqual(packets.slice(preciseFrom).filter(p=>p[0]!==8).map(p=>p[0]),[1],'A small correction must not become a hold-drag');
+ const jitterFrom=packets.length;
+ await touch('touchStart',[[120,250]]);await touch('touchMove',[[121,251]]);await touch('touchEnd',[]);await page.waitForTimeout(30);
+ assert.deepEqual(packets.slice(jitterFrom).filter(p=>p[0]!==8).map(p=>p[0]),[3],'Landing jitter must stay a click without moving the cursor');
+ await page.locator('#pad').dispatchEvent('touchcancel');
+ // After the initial state change, ordinary pointer motion must not mutate UI.
+ await touch('touchStart',[[120,250]]);await touch('touchMove',[[140,270]]);
+ await page.evaluate(()=>{
+  window.motionMutations=0;
+  window.motionObserver=new MutationObserver(records=>window.motionMutations+=records.length);
+  for(const id of ['pad','drag-state']) window.motionObserver.observe(document.getElementById(id),{attributes:true,childList:true,subtree:true,characterData:true});
+ });
+ await touch('touchMove',[[160,280]]);await touch('touchMove',[[180,290]]);
+ assert.equal(await page.evaluate(()=>{window.motionObserver.disconnect();return window.motionMutations;}),0,'Steady motion must not mutate DOM');
+ await touch('touchEnd',[]);
  await touch('touchStart',[[120,250]]);await touch('touchEnd',[]);
  await touch('touchStart',[[120,250],[190,250]]);await touch('touchEnd',[]);
  await touch('touchStart',[[120,250]]);await touch('touchMove',[[155,275]]);await touch('touchEnd',[]);
@@ -131,22 +139,41 @@ try {
  assert.equal(await page.locator('#pad').evaluate(el=>el.classList.contains('scroll-left')),false,'Strip defaults to the right');
  assert(stripBox.width>=44&&stripBox.height>=100,'Scroll strip must be an accessible touch target');
  from=packets.length;
- await touch('touchStart',[[sx,sy]]);await touch('touchMove',[[sx,sy+40]]);await touch('touchEnd',[]);await page.waitForTimeout(50);
+ await touch('touchStart',[[sx,sy]]);await touch('touchMove',[[sx,sy+40]]);await page.waitForTimeout(100);await touch('touchEnd',[]);await page.waitForTimeout(50);
  const stripPackets=packets.slice(from).filter(p=>p[0]!==8);
  assert.deepEqual(stripPackets.map(p=>p[0]),[2]);
  from=packets.length;
- await touch('touchStart',[[120,250],[190,250]]);await touch('touchMove',[[120,290],[190,290]]);await touch('touchEnd',[]);await page.waitForTimeout(50);
+ await touch('touchStart',[[120,250],[190,250]]);await touch('touchMove',[[120,290],[190,290]]);await page.waitForTimeout(100);await touch('touchEnd',[]);await page.waitForTimeout(50);
  assert.deepEqual(stripPackets,packets.slice(from).filter(p=>p[0]!==8),'Strip must match two-finger scrolling');
  from=packets.length;
  await touch('touchStart',[[sx,sy]]);await touch('touchEnd',[]);
  await touch('touchStart',[[sx,sy]]);await page.waitForTimeout(450);await touch('touchEnd',[]);await page.waitForTimeout(50);
  assert.deepEqual(packets.slice(from).filter(p=>p[0]!==8),[],'Strip taps and holds must not click');
  from=packets.length;
- await touch('touchStart',[[sx,sy]]);await touch('touchMove',[[sx-80,sy+40]]);await touch('touchEnd',[]);await page.waitForTimeout(50);
+ await touch('touchStart',[[sx,sy]]);await touch('touchMove',[[sx-80,sy+40]]);await page.waitForTimeout(100);await touch('touchEnd',[]);await page.waitForTimeout(50);
  assert.deepEqual(packets.slice(from).filter(p=>p[0]!==8).map(p=>p[0]),[2],'Leaving the strip must keep scrolling');
  from=packets.length;
  await touch('touchStart',[[sx-80,sy]]);await touch('touchMove',[[sx,sy+40]]);await touch('touchEnd',[]);await page.waitForTimeout(50);
  assert.deepEqual(packets.slice(from).filter(p=>p[0]!==8).map(p=>p[0]),[1],'Crossing into the strip must keep moving the pointer');
+ // Actual touch release must keep sending wheel movement; touching again brakes it.
+ for(const strip of [true,false]) {
+  const points=y=>strip?[[sx,y]]:[[120,y],[190,y]];
+  from=packets.length;
+  await touch('touchStart',points(250));
+  for(const y of [270,290,310,330]){await page.waitForTimeout(16);await touch('touchMove',points(y));}
+  await touch('touchEnd',[]);await page.waitForTimeout(50);
+  const released=packets.length;
+  await page.waitForTimeout(120);
+  const coastPackets=packets.slice(released).filter(p=>p[0]!==8);
+  assert(coastPackets.length>=2,`${strip?'Strip':'Two-finger'} flick must coast after lifting`);
+  assert(packets.slice(from).filter(p=>p[0]!==8).every(p=>p[0]===2),'Scrolling must never generate clicks or pointer movement');
+  assert(coastPackets.every(p=>new DataView(Uint8Array.from(p).buffer).getFloat32(5,true)<0),'Momentum must preserve natural scrolling direction');
+  await touch('touchStart',[[sx,sy]]);await page.waitForTimeout(30);
+  const stopped=packets.filter(p=>p[0]!==8).length,stoppedFrames=await page.evaluate(()=>window.decorativeFrames);
+  await page.waitForTimeout(120);await touch('touchEnd',[]);await page.waitForTimeout(50);
+  assert.equal(packets.filter(p=>p[0]!==8).length,stopped,'Touching the strip must stop momentum without clicking');
+  assert.equal(await page.evaluate(()=>window.decorativeFrames),stoppedFrames,'Braking must stop scheduling momentum frames');
+ }
  const padBox=await page.locator('#pad').boundingBox();
  for(const id of ['mod-super','right-click']) {
   const box=await page.locator(`#${id}`).boundingBox();
@@ -213,9 +240,9 @@ try {
  await waitForFill(0);
  await page.emulateMedia({reducedMotion:'reduce'});
  await page.waitForTimeout(100);
- const stillFrames=await page.evaluate(()=>window.orbDraws);
+ const stillFrames=await page.evaluate(()=>window.decorativeFrames);
  await page.waitForTimeout(120);
- assert.equal(await page.evaluate(()=>window.orbDraws),stillFrames,'Reduced motion must stop the orb animation loop');
+ assert.equal(await page.evaluate(()=>window.decorativeFrames),stillFrames,'Reduced motion must stop the orb animation loop');
  await touch('touchStart',[superPoint]);
  await waitForFill(1);
  await page.setViewportSize({width:420,height:844});
@@ -226,8 +253,9 @@ try {
  await page.setViewportSize({width:390,height:844});
  await page.emulateMedia({reducedMotion:'no-preference'});
  await page.locator('#keyboard-toggle').click();
+ assert.equal(await page.locator('#native-input').evaluate(el=>document.activeElement===el),true,'Opening the keyboard must focus phone typing in one tap');
+ await page.locator('#grid-mode').tap();
  // Hold keyboard Super with one finger, then use shortcut keys with another.
- await page.locator('#native-input').focus();
  const center=async selector=>{const b=await page.locator(selector).boundingBox();return [b.x+b.width/2,b.y+b.height/2];};
  const keySuperPoint=await center('#key-super');
  from=packets.length;
@@ -308,14 +336,70 @@ try {
  assert(packets.some(p=>p[0]===14),'Native text packet missing');
  await mkdir(new URL('artifacts/',root),{recursive:true});
  await page.screenshot({path:new URL('artifacts/keyboard.png',root).pathname});
- // Model the reduced visible area above a phone's software keyboard.
- for(const height of [440,320]) {
-  await resizeViewport({width:390,height});
-  assert.equal(await fullyVisible('#special-keys button, #native-mode, #grid-mode, #keyboard-close, #native-input'),true,'Phone typing controls must stay above the software keyboard');
+ // Touch and mouse accessory keys must send once without taking focus from typing.
+ for(const usage of [41,43,80,79,42,40]) {
+  from=packets.length;
+  await page.locator(`#native-tools button[data-key="${usage}"]`).tap();
+  await page.waitForTimeout(30);
+  assert.equal(await page.locator('#native-input').evaluate(el=>document.activeElement===el),true,'Accessory taps must keep the phone keyboard open');
+  assert.deepEqual(packets.slice(from).filter(p=>p[0]!==8),[[11,usage]],'Accessory taps must send exactly one remote key');
  }
+ from=packets.length;
+ await page.locator('#native-input').fill('after navigation');await page.waitForTimeout(50);
+ assert.deepEqual(packets.slice(from).filter(p=>p[0]!==8),[[14,...Buffer.from('after navigation')]],'Navigation must start a fresh typing context');
+ await page.locator('#native-tools button[data-key="40"]').click();
+ assert.equal(await page.locator('#native-input').evaluate(el=>document.activeElement===el),true,'Mouse accessory clicks must also preserve focus');
+ // Model the reduced visible area above a phone's software keyboard.
+ for(const viewport of [{width:390,height:440},{width:390,height:320},{width:320,height:220},{width:640,height:240}]) {
+  await resizeViewport(viewport);
+  assert.equal(await fullyVisible('#native-tools button, #native-mode, #grid-mode, #keyboard-close, #native-input'),true,'Phone typing controls must stay above the software keyboard');
+  assert.equal(await page.locator('#native-tools button').evaluateAll(buttons=>buttons.every(button=>{const r=button.getBoundingClientRect();return r.width>=44&&r.height>=44})),true,'Typing controls must retain thumb-sized targets');
+  assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
+ }
+ await resizeViewport({width:390,height:320});
+ await page.locator('#native-input').fill('Hello!');
  await page.screenshot({path:new URL('artifacts/keyboard-compact.png',root).pathname});
+ // Safari changes its visual viewport without changing CSS media-query height.
+ await resizeViewport({width:390,height:844});
+ const visualViewport=async(height,offsetTop=0)=>page.evaluate(({height,offsetTop})=>{
+  for(const [name,value] of Object.entries({height,offsetTop})) Object.defineProperty(window.visualViewport,name,{configurable:true,value});
+  window.visualViewport.dispatchEvent(new Event('resize'));
+  window.visualViewport.dispatchEvent(new Event('scroll'));
+ },{height,offsetTop});
+ for(const [height,offset] of [[480,0],[320,64],[220,110],[320,0],[480,0]]) {
+  await visualViewport(height,offset);
+  const main=await page.locator('main').boundingBox();
+  assert.equal(main.y,offset,'The app must follow visual viewport panning');
+  assert.equal(main.height,height,'The app must follow visual viewport height independently of innerHeight');
+  assert.equal(await page.locator('#native-input').inputValue(),'Hello!','Viewport changes must not reset the text context');
+  assert.equal(await page.locator('#native-tools button, #native-input, .keyboard-toolbar').evaluateAll(elements=>elements.every(el=>{const r=el.getBoundingClientRect(),v=visualViewport;return r.top>=v.offsetTop&&r.bottom<=v.offsetTop+v.height})),true,'Typing controls must fit within a panned visual viewport');
+ }
+ // A scroll-only viewport change also needs to move the app.
+ await page.evaluate(()=>{Object.defineProperty(visualViewport,'offsetTop',{configurable:true,value:48});visualViewport.dispatchEvent(new Event('scroll'));});
+ assert.equal((await page.locator('main').boundingBox()).y,48);
+ await page.locator('#grid-mode').tap();
+ await visualViewport(320,0);
+ assert.equal(await fullyVisible('#special-keys button, #native-mode, #grid-mode, #keyboard-close'),true,'Grid modifiers must stay reachable while the OS keyboard closes');
+ const modifierY=(await page.locator('#key-super').boundingBox()).y;
+ await page.locator('#keyboard-panel .sheet-scroll').evaluate(el=>{el.scrollTop=el.scrollHeight;});
+ assert.equal((await page.locator('#key-super').boundingBox()).y,modifierY,'Scrolling the grid must keep modifiers anchored');
+ await visualViewport(220,0);
+ assert.equal(await page.locator('#special-keys button, #native-mode, #grid-mode, #keyboard-close').evaluateAll(elements=>elements.every(el=>{const r=el.getBoundingClientRect();return r.top>=0&&r.bottom<=visualViewport.height})),true,'Grid controls must also fit short landscape keyboard transitions');
+ await page.evaluate(()=>{delete visualViewport.height;delete visualViewport.offsetTop;visualViewport.dispatchEvent(new Event('resize'));});
  await resizeViewport({width:390,height:844});
  await page.locator('#keyboard-close').click();
+ await page.locator('#keyboard-toggle').tap();
+ assert.equal(await page.locator('#native-input').evaluate(el=>document.activeElement===el),true,'Reopening must return directly to phone typing');
+ // Older browsers fall back to the window size when VisualViewport is missing.
+ await page.evaluate(()=>{
+  window.viewportDescriptor=Object.getOwnPropertyDescriptor(window,'visualViewport');
+  Object.defineProperty(window,'visualViewport',{configurable:true,value:undefined});
+ });
+ await resizeViewport({width:320,height:440});
+ assert.equal(await fullyVisible('#native-tools button, #native-mode, #grid-mode, #keyboard-close, #native-input'),true,'Window resize fallback must keep typing controls usable');
+ await page.evaluate(()=>{Object.defineProperty(window,'visualViewport',window.viewportDescriptor);window.dispatchEvent(new Event('resize'));});
+ await resizeViewport({width:390,height:844});
+ await page.locator('#keyboard-close').tap();
  await mkdir(new URL('artifacts/',root),{recursive:true});
  await page.screenshot({path:new URL('artifacts/phone.png',root).pathname});
  await page.locator('#settings-open').click();
@@ -334,7 +418,7 @@ try {
  const leftBox=await page.locator('#scroll-zone').boundingBox(),reloadedPad=await page.locator('#pad').boundingBox();
  assert(Math.abs(leftBox.x-reloadedPad.x)<=2,'Strip must move to the left edge');
  from=packets.length;
- await touch('touchStart',[[leftBox.x+22,250]]);await touch('touchMove',[[leftBox.x+22,290]]);await touch('touchEnd',[]);await page.waitForTimeout(50);
+ await touch('touchStart',[[leftBox.x+22,250]]);await touch('touchMove',[[leftBox.x+22,290]]);await page.waitForTimeout(100);await touch('touchEnd',[]);await page.waitForTimeout(50);
  assert.deepEqual(packets.slice(from).filter(p=>p[0]!==8),stripPackets,'Left strip must scroll identically');
  await page.screenshot({path:new URL('artifacts/phone-scroll-left.png',root).pathname});
  await page.locator('#settings-open').click();await page.locator('#disconnect').click();
@@ -343,26 +427,13 @@ try {
  await page.locator('#forget').click();assert.equal(await page.evaluate(()=>localStorage.getItem('ghostpad.key')),'');
  await page.locator('#mod-super').tap();
  assert.equal(await fillActive(),'false','Unpaired touches must not activate the fill');
- // Losing the GPU keeps a visible CSS face and the original Super control.
- await page.evaluate(()=>{
-  const gl=document.querySelector('[data-slot="live-orb"] canvas').getContext('webgl');
-  window.orbContext=gl.getExtension('WEBGL_lose_context');
-  window.orbContext.loseContext();
- });
- await page.waitForSelector('[data-slot="live-orb"][data-renderer="fallback"]');
- assert.equal(await orb.locator('span').count(),2,'Fallback must retain both eyes');
- assert.equal(await page.evaluate(([x,y])=>document.elementFromPoint(x,y).id,orbPoint),'mod-super');
- await page.evaluate(()=>window.orbContext.restoreContext());
- await page.waitForSelector('[data-slot="live-orb"][data-renderer="webgl"]');
- // A browser with no WebGL at all must also start and show the CSS fallback.
- await page.addInitScript(()=>{
-  const getContext=HTMLCanvasElement.prototype.getContext;
-  HTMLCanvasElement.prototype.getContext=function(type,...args){return type==='webgl'?null:getContext.call(this,type,...args);};
- });
- await page.reload();
- await page.waitForSelector('[data-slot="live-orb"][data-renderer="fallback"]');
- assert.equal(await orb.locator('span').count(),2);
- assert.equal(await page.locator('#status').textContent(),'Pair your phone');
  assert.deepEqual(errors,[]);
  console.log('Browser client: pairing, gestures, settings, reconnect, and forgetting passed. Screenshots: artifacts/.');
 } finally {await browser.close();}
+
+if (process.argv.includes('--profile')) {
+ const { profileBrowser } = await import('./performance.mjs');
+ const index=process.argv.indexOf('--compare');
+ const baseline=process.argv.indexOf('--baseline-assets');
+ await profileBrowser(index>=0?process.argv[index+1]:undefined,baseline>=0?process.argv[baseline+1]:undefined);
+}

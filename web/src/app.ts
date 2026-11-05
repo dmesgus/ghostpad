@@ -1,4 +1,5 @@
 import { Gestures, type Action } from './gestures.js';
+import { ScrollMomentum } from './scroll.js';
 import { textEdit, normalizeText } from './text.js';
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const pad = $('pad'), dialog = $<HTMLDialogElement>('settings'), sensitivity = $<HTMLInputElement>('sensitivity'), natural = $<HTMLInputElement>('natural');
@@ -19,7 +20,8 @@ function scrollSidePreference() {
   for (const button of $('scroll-side').querySelectorAll<HTMLButtonElement>('button')) button.setAttribute('aria-pressed', String(button.dataset.side === scrollSide));
 }
 scrollSidePreference();
-function preferences() { $('sensitivity-value').textContent = `${Number(sensitivity.value).toFixed(1)}×`; save('sensitivity', sensitivity.value); save('natural', String(natural.checked)); for (const button of $('tracking-presets').querySelectorAll<HTMLButtonElement>('button')) button.setAttribute('aria-pressed', String(Number(button.dataset.speed) === Number(sensitivity.value))); }
+let pointerSpeed = Number(sensitivity.value);
+function preferences() { pointerSpeed = Number(sensitivity.value); $('sensitivity-value').textContent = `${Number(sensitivity.value).toFixed(1)}×`; save('sensitivity', sensitivity.value); save('natural', String(natural.checked)); for (const button of $('tracking-presets').querySelectorAll<HTMLButtonElement>('button')) button.setAttribute('aria-pressed', String(Number(button.dataset.speed) === Number(sensitivity.value))); }
 preferences(); sensitivity.oninput = preferences; natural.onchange = preferences;
 let socket: WebSocket | null = null, ready = false, paused = false, retry = 500, reconnect = 0, heartbeat = 0, lastPong = 0, connectionDeadline = 0;
 let lastMotion = -Infinity, lastPing = 0;
@@ -28,13 +30,12 @@ let scrollTouch: { id: number; x: number; y: number; moved: boolean } | null = n
 const superPointers = new Set<number>();
 const padSuperPointers = new Set<number>();
 let superOrigin: { x: number | null; y: number | null } = { x: null, y: null };
-let lastSuperFill = '';
+let lastSuperFill: { active: boolean; x: number | null; y: number | null } | null = null;
 function updateSuperFill() {
   const active = modifiers.has('super') && (padSuperPointers.size > 0 || superKeys.has($('mod-super')));
   const detail = { active, ...superOrigin };
-  const signature = JSON.stringify(detail);
-  if (signature === lastSuperFill) return;
-  lastSuperFill = signature;
+  if (lastSuperFill && detail.active === lastSuperFill.active && detail.x === lastSuperFill.x && detail.y === lastSuperFill.y) return;
+  lastSuperFill = detail;
   window.dispatchEvent(new CustomEvent('ghostpad-super-fill', { detail }));
 }
 const superKeys = new Set<HTMLElement>();
@@ -70,7 +71,8 @@ function flush() {
     pending = null;
   }
 }
-function action(a: Action) {
+function action(a: Action, coasting = false) {
+  if (a.type === 'scroll' && !coasting) momentum.track(a.dx, a.dy, performance.now());
   if (a.type === 'zoomend') {
     flush(); send(16);
   } else if (a.type === 'move' || a.type === 'scroll' || a.type === 'zoom') {
@@ -78,51 +80,98 @@ function action(a: Action) {
     // Pinch carries an absolute scale: coalescing keeps the latest sample.
     if (a.type === 'zoom') pending = { type: 'zoom', scale: a.scale };
     else {
-      const factor = a.type === 'move' ? Number(sensitivity.value) : scrollSpeed * (natural.checked ? -1 : 1);
+      const factor = a.type === 'move' ? pointerSpeed : scrollSpeed * (natural.checked ? -1 : 1);
       if (!pending || pending.type === 'zoom') pending = { type: a.type, dx: 0, dy: 0 };
       pending.dx += a.dx * factor; pending.dy += a.dy * factor;
     }
-    if (!frame) { const delay = 8 - (performance.now() - lastMotion); if (delay <= 0) flush(); else frame = window.setTimeout(flush, delay); }
+    // Cursor updates can follow 240 Hz touch sampling; scrolling stays at 125 Hz.
+    // A busy event loop must not hold an overdue update behind its pending timer.
+    const delay = (a.type === 'move' ? 4 : 8) - (performance.now() - lastMotion);
+    if (delay <= 0) flush(); else if (!frame) frame = window.setTimeout(flush, Math.ceil(delay));
   } else { flush(); send(({ left: 3, right: 4, down: 5, up: 6, rightdown: 12, rightup: 13 } as Record<string, number>)[a.type]); }
-  $('drag-state').hidden = a.type !== 'down' && !gestures.dragging;
+  setDragging(a.type === 'down' || gestures.dragging);
 }
+const dragState = $('drag-state');
+function setDragging(active: boolean) { if (dragState.hidden === active) dragState.hidden = !active; }
 const gestures = new Gestures(action, () => modifiers.has('super'));
+const momentum = new ScrollMomentum();
+let momentumFrame = 0;
+function stopMomentum() {
+  // Discard any unsent coast delta before a new touch or shortcut takes control.
+  if (momentumFrame && pending?.type === 'scroll') { clearTimeout(frame); frame = 0; pending = null; }
+  cancelAnimationFrame(momentumFrame); momentumFrame = 0; momentum.reset();
+}
+function coast() {
+  momentumFrame = 0;
+  if (!ready || socket?.readyState !== WebSocket.OPEN) { stopMomentum(); return; }
+  const delta = momentum.step(performance.now());
+  if (!delta) return;
+  action({ type: 'scroll', ...delta }, true);
+  momentumFrame = requestAnimationFrame(coast);
+}
+function releaseScroll(time: number) {
+  flush();
+  if (!modifiers.has('super') && momentum.release(time)) momentumFrame = requestAnimationFrame(coast);
+}
+// Catch touches on every control, including a tap that only brakes the strip.
+document.addEventListener('touchstart', stopMomentum, { capture: true, passive: true });
+document.addEventListener('pointerdown', stopMomentum, true);
+document.addEventListener('keydown', stopMomentum, true);
 function resetScroll() { scrollTouch = null; scrollZone.classList.remove('active'); }
-function cancel() { stopText(); resetScroll(); superPointers.clear(); padSuperPointers.clear(); superKeys.clear(); padTouches = 0; ignorePad = false; clearTimeout(hold); clearTimeout(frame); frame = 0; pending = null; lastMotion = -Infinity; gestures.cancel(); send(7); modifiers.clear(); shortcutModifiers.clear(); updateModifiers(); pad.classList.remove('active'); $('drag-state').hidden = true; }
+function moveStrip(touch: Touch) {
+  if (!scrollTouch) return;
+  const dx = touch.clientX - scrollTouch.x, dy = touch.clientY - scrollTouch.y;
+  if ((dx || dy) && (scrollTouch.moved || Math.hypot(dx, dy) >= 6)) {
+    action({ type: 'scroll', dx, dy });
+    scrollTouch = { id: scrollTouch.id, x: touch.clientX, y: touch.clientY, moved: true };
+  }
+}
+function cancel() { stopMomentum(); stopText(); resetScroll(); superPointers.clear(); padSuperPointers.clear(); superKeys.clear(); padTouches = 0; ignorePad = false; clearTimeout(hold); clearTimeout(frame); frame = 0; pending = null; lastMotion = -Infinity; gestures.cancel(); send(7); modifiers.clear(); shortcutModifiers.clear(); updateModifiers(); pad.classList.remove('active'); setDragging(false); }
 for (const type of ['touchstart', 'touchmove', 'touchend'] as const) {
   pad.addEventListener(type, (event: TouchEvent) => {
     // Touches retain their original target when sliding across zone boundaries.
     // Use all surface touches, including those starting on different child elements.
     if ((event.target as Element).closest('button')) return;
     event.preventDefault(); if (!ready) return;
-    const touches = Array.from(event.touches).filter(t => pad.contains(t.target as Node) && !(t.target as Element).closest('button'));
+    const onSurface = (t: Touch) => pad.contains(t.target as Node) && !(t.target as Element).closest('button');
+    const touches = Array.from(event.touches).filter(onSurface);
+    const ended = type === 'touchend' ? Array.from(event.changedTouches).filter(onSurface) : [];
     const points = touches.map(t => ({ x: t.clientX, y: t.clientY }));
-    if (type === 'touchstart') { nativeInput.blur(); resetTextContext(); }
+    const time = performance.now();
+    if (type === 'touchstart') {
+      if (!padTouches) { flush(); lastMotion = -Infinity; }
+      momentum.begin(time); nativeInput.blur(); resetTextContext();
+    }
     if (!padTouches && touches.length === 1 && (touches[0].target as Element).closest('#scroll-zone')) {
       // Keep the gesture in its starting zone, even if the finger slides out.
       gestures.cancel(); clearTimeout(hold);
       scrollTouch = { id: touches[0].identifier, x: touches[0].clientX, y: touches[0].clientY, moved: false };
       scrollZone.classList.toggle('active', true);
     }
+    const previousCount = padTouches;
     padTouches = points.length;
     if (ignorePad) { resetScroll(); if (!padTouches) ignorePad = false; return; }
     if (scrollTouch) {
+      const finalTouch = ended.find(t => t.identifier === scrollTouch!.id);
+      if (finalTouch) moveStrip(finalTouch);
       if (touches.length !== 1 || touches[0].identifier !== scrollTouch.id) {
-        flush(); resetScroll(); ignorePad = padTouches > 0;
-      } else {
-        const dx = touches[0].clientX - scrollTouch.x, dy = touches[0].clientY - scrollTouch.y;
-        if ((dx || dy) && (scrollTouch.moved || Math.hypot(dx, dy) >= 6)) {
-          action({ type: 'scroll', dx, dy });
-          scrollTouch = { id: scrollTouch.id, x: touches[0].clientX, y: touches[0].clientY, moved: true };
-        }
-      }
+        if (!padTouches && type === 'touchend') releaseScroll(time); else { flush(); stopMomentum(); }
+        resetScroll(); ignorePad = padTouches > 0;
+      } else moveStrip(touches[0]);
       return;
     }
-    gestures.update(points, performance.now()); pad.classList.toggle('active', points.length > 0);
+    // touchend carries the lifted fingers' final positions in changedTouches.
+    // Deliver that last sample before ending a drag, scroll, or pinch.
+    if (ended.length && touches.length + ended.length === previousCount) {
+      gestures.update([...touches, ...ended].map(t => ({ x: t.clientX, y: t.clientY })), time);
+    }
+    gestures.update(points, time);
+    if (!padTouches && type === 'touchend') releaseScroll(time);
     if (type !== 'touchmove') clearTimeout(hold);
-    if (type === 'touchstart' && points.length === 1) hold = window.setTimeout(() => { gestures.hold(performance.now()); $('drag-state').hidden = !gestures.dragging; }, 400);
-    $('drag-state').hidden = !gestures.dragging;
-    $('drag-state').textContent = modifiers.has('super') ? (points.length === 2 ? 'Resizing window' : 'Moving window') : 'Dragging';
+    if (type === 'touchstart' && points.length === 1) hold = window.setTimeout(() => { gestures.hold(performance.now()); setDragging(gestures.dragging); }, 400);
+    setDragging(gestures.dragging);
+    const label = modifiers.has('super') ? (points.length === 2 ? 'Resizing window' : 'Moving window') : 'Dragging';
+    if (dragState.textContent !== label) dragState.textContent = label;
   }, { passive: false });
 }
 pad.addEventListener('touchcancel', cancel); pad.addEventListener('contextmenu', e => e.preventDefault());
@@ -212,6 +261,7 @@ for (const [name, usage] of [['ctrl', 224], ['alt', 226], ['shift', 225]] as con
 function setSuper(down: boolean) {
   if (down && (!ready || textQueue.length)) return;
   if (down === modifiers.has('super')) return;
+  stopMomentum();
   if (down) { nativeInput.blur(); resetTextContext(); }
   gestures.cancel();
   if (padTouches) { ignorePad = true; resetScroll(); }
@@ -256,6 +306,7 @@ $('keyboard-toggle').onclick = () => {
   if (!$('keyboard-panel').hidden) { closeKeyboard(); return; }
   cancel(); closeSettings(); $('keyboard-panel').hidden = false;
   $('keyboard-toggle').setAttribute('aria-expanded', 'true'); document.body.classList.toggle('keyboard-open', true);
+  keyboardMode(true);
 };
 const nativeInput = $<HTMLTextAreaElement>('native-input');
 function resetTextContext() { previousText = ''; nativeInput.value = ''; }
@@ -290,7 +341,9 @@ function nativeEdit() {
 nativeInput.addEventListener('focus', () => {
   // Plain typing must not accidentally become Super/Ctrl/Alt shortcuts.
   gestures.cancel(); flush(); send(7); modifiers.clear(); shortcutModifiers.clear(); superPointers.clear(); padSuperPointers.clear(); superKeys.clear(); updateModifiers();
+  fitViewport();
 });
+nativeInput.addEventListener('blur', fitViewport);
 nativeInput.addEventListener('compositionstart', () => { composing = true; });
 nativeInput.addEventListener('compositionend', () => { composing = false; nativeEdit(); });
 nativeInput.addEventListener('input', nativeEdit);
@@ -302,18 +355,22 @@ nativeInput.addEventListener('beforeinput', (event: InputEvent) => {
 });
 function keyboardMode(native: boolean) {
   $('native-panel').hidden = !native; $('keyboard').hidden = native;
+  $('native-tools').hidden = !native; $('special-keys').hidden = native;
+  document.body.classList.toggle('grid-mode', !native);
   $('native-mode').setAttribute('aria-pressed', String(native)); $('grid-mode').setAttribute('aria-pressed', String(!native));
-  if (native) nativeInput.focus(); else nativeInput.blur();
+  if (native) nativeInput.focus({ preventScroll: true }); else nativeInput.blur();
 }
 $('native-mode').onclick = () => keyboardMode(true);
 $('grid-mode').onclick = () => keyboardMode(false);
 function specialKey(event: MouseEvent) {
   const button = (event.target as HTMLElement).closest<HTMLButtonElement>('button[data-key]');
-  if (!button || !ready) return;
+  if (!button || !ready || composing) return;
   const held = new Set(shortcutModifiers.values());
   if (button.dataset.shift === 'true') held.add(225);
   if (held.size && textQueue.length) return;
-  nativeInput.blur(); gestures.cancel(); resetTextContext(); flush();
+  // Accessory keys navigate the computer without closing the phone keyboard.
+  if (!button.closest('#native-tools')) nativeInput.blur();
+  gestures.cancel(); resetTextContext(); flush();
   const usage = Number(button.dataset.key);
   if (held.size) {
     // Send the complete chord in this turn, with no timers that could leave a modifier held.
@@ -325,9 +382,14 @@ function specialKey(event: MouseEvent) {
 }
 $('keyboard').addEventListener('click', specialKey);
 $('special-keys').addEventListener('click', specialKey);
+$('native-tools').addEventListener('click', specialKey);
+// Cancel focus transfer on pointer-down; touch-end below still dispatches one tap.
+$('native-tools').addEventListener('pointerdown', event => {
+  if ((event.target as Element).closest('button') && document.activeElement === nativeInput) event.preventDefault();
+});
 // Browsers can omit clicks from a second finger while Super is held.
 // Handle touch taps explicitly, suppressing the browser's duplicate click.
-for (const id of ['keyboard', 'special-keys']) {
+for (const id of ['keyboard', 'special-keys', 'native-tools']) {
   const area = $(id), taps = new Map<number, { button: HTMLButtonElement; x: number; y: number }>();
   area.addEventListener('touchstart', event => {
     for (const touch of Array.from(event.changedTouches)) {
@@ -362,15 +424,22 @@ for (const id of ['tracking-presets', 'scroll-presets']) {
     for (const item of $(id).querySelectorAll<HTMLButtonElement>('button')) item.setAttribute('aria-pressed', String(item === button));
   });
 }
-// Fit the sheets above Safari's software keyboard without scrolling the touch surface away.
+// Safari can pan the visual viewport as well as resize it when the keyboard opens.
+// Follow both changes; CSS height media queries still see the larger layout viewport.
 function fitViewport() {
-  const height = window.visualViewport?.height;
+  const viewport = window.visualViewport;
+  const height = viewport?.height || window.innerHeight;
   if (height) {
-    document.querySelector('main')!.style.height = `${height}px`;
-    document.body.classList.toggle('compact-keyboard', height < 500);
+    const main = document.querySelector('main')!;
+    main.style.height = `${height}px`;
+    main.style.top = `${viewport?.offsetTop || 0}px`;
+    document.body.classList.toggle('compact-keyboard', height < 560);
+    document.body.classList.toggle('tight-keyboard', height < 300);
   }
+  document.body.classList.toggle('native-focused', document.activeElement === nativeInput);
 }
 window.visualViewport?.addEventListener('resize', fitViewport);
+window.visualViewport?.addEventListener('scroll', fitViewport);
 window.addEventListener('resize', fitViewport); fitViewport();
 
 window.dispatchEvent(new Event('ghostpad-started'));

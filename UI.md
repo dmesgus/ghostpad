@@ -1,48 +1,48 @@
-# Frontend setup
+# Frontend architecture
 
-Ghostpad uses TypeScript for gesture/network handling and a React island for the Super fill and LiveOrb. React, React DOM, Motion, Tailwind CSS v4, esbuild, and the TypeScript types are installed and locked in `package-lock.json`. No framework migration or shadcn initialization is needed to build this checkout.
-
-## Paths
+Ghostpad uses plain TypeScript, CSS, and SVG. There are no browser runtime dependencies. React, Motion, WebGL, Tailwind, and the component demos were removed from the performance-focused implementation.
 
 | Purpose | Path |
 | --- | --- |
-| Reusable React components | `components/ui/` |
-| Supplied button and shared fill animation | `components/ui/origin-button.tsx` |
-| Button demo | `components/ui/demo.tsx` |
-| LiveOrb and its standalone demo | `components/ui/live-orb.tsx`, `components/ui/live-orb-demo.tsx` |
-| `cn` helper | `lib/utils.ts` |
-| Editable global styles and Tailwind theme | `web/src/style.css` |
-| Pad animation integration | `web/src/super-fill.tsx` |
-| Gesture controller | `web/src/app.ts` |
-| Generated browser assets | `web/style.css`, `web/super-fill.js`, `web/app.js` |
+| Gesture/network controller | `web/src/app.ts` |
+| Gesture recognition | `web/src/gestures.ts` |
+| Decorative Super fill | `web/src/super-fill.ts` |
+| Styles | `web/src/style.css` |
+| Static orb SVG and interface | `web/index.html` |
+| Generated browser assets | `web/*.js`, `web/style.css` |
 
-`@/` resolves to the repository root. The new `components/ui` folder matches the requested imports and the `aliases.ui` setting in `components.json`, so reusable controls have a consistent home. This is a project convention, not a React requirement. `components.json` points the shadcn CLI at the source stylesheet and TypeScript aliases.
+Run `npm ci`, then `npm run build:web`. The build compiles TypeScript and copies the source stylesheet. Run `npm test` and `npm run test:browser` for verification. Rebuild the embedded receiver with `cargo build --release --offline`, restart it, and refresh the phone.
 
-## Build and run
+The Super effect retains the expanding black circle, 0.5-second duration, and original easing. CSS animates only the transform; JavaScript measures geometry when the hold starts or the held pad resizes. The SVG face changes color and eye shape on Super activation. It has no idle animation, gaze tracking, canvas, or blend mode. Reduced motion disables transitions. Decoration ignores pointer input, preserving the original zone boundaries, cancellation, and modifier ordering.
+
+Pointer sensitivity is cached when preferences change. Drag labels and visibility update only on state changes. Gesture timing, the 8 ms motion-send interval, and network backpressure policy are unchanged pending real-device latency measurements.
+
+## Phone keyboard layout
+
+The keyboard panel opens and focuses native typing in the same user gesture. Phone mode has a short text field and six accessory keys along the bottom. Accessory pointer-down prevents focus transfer, and touch-end sends exactly one tap; arrows, Tab, Escape, Return, and Backspace start a new remote typing context without dismissing the phone keyboard. Composition must commit before accessory navigation can run.
+
+Grid mode has 44 px-tall keys in a scrollable center, with the mode switch above and modifier/navigation controls pinned below. The main dock is hidden in both modes. Short visible viewports hide the touchpad before shrinking these controls.
+
+The fixed app frame follows `visualViewport.height` and `offsetTop` on both `resize` and `scroll`, with `innerHeight` as a fallback. Height classes use the visual viewport because CSS media queries can retain the full layout height while the OS keyboard is visible. See [VisualViewport](https://developer.mozilla.org/en-US/docs/Web/API/VisualViewport) and [focus with preventScroll](https://developer.mozilla.org/en-US/docs/Web/API/HTMLElement/focus).
+
+Browser regressions check one-tap opening, touch/mouse accessory focus, packet ordering, minimum accessory sizes, short/landscape views, simulated viewport panning, and pinned grid controls. These simulations do not open a real iOS/Android keyboard; physical-device verification is still needed.
+
+## Performance verification
+
+Browser tests check touch behavior, fill coverage/reversal, reduced motion, small-screen layouts, and absence of idle animation-frame requests. They deliberately reject canvas creation. The embedded-page test limits the served page to 70 KB to prevent large runtime dependencies returning unnoticed.
+
+These checks do not measure finger-to-desktop latency. Compare releases on the same phone, Wi-Fi, and desktop, including sustained use. Record latency distributions (median, p95, p99), stalls/reconnects, input processing time, and battery/thermal behavior. The settings RTT is a network/application round trip, not end-to-end cursor latency. High-frame-rate video of the finger and desktop can establish visible response time without synchronizing device clocks. Only adjust gesture thresholds, send intervals, or transport after that comparison.
+
+Run the optional local comparison after the browser regression suite:
 
 ```bash
-npm ci
-npm run build:web
-npm test
-npm run test:browser
-cargo build --release --offline
-./target/release/ghostpad --verbose
+npm run test:browser -- --profile --compare 586da29
 ```
 
-Stop an existing receiver before starting the new one, then refresh the phone page. The receiver embeds all browser assets, so changing frontend files requires rebuilding the Rust binary. No CDN, Node server, or runtime asset downloads are used.
+Omit `--compare` to profile only the working tree. The harness performs three runs per version in alternating order and writes `artifacts/performance.json`. It records startup-to-controller time, idle animation-frame requests, renderer task time, synchronous touch-handler durations, and synthetic movement-to-WebSocket-send durations. It uses a local mocked peer and does not inject input into the desktop.
 
-The build type-checks both the gesture code and React components, bundles the React island, and compiles Tailwind into `web/style.css`. Tailwind's theme and utilities are enabled without Preflight, preserving the existing touch layout. The Rust page builder includes the animation bundle with an exact CSP hash.
+To compare against a saved copy of uncommitted web assets, use `--profile --baseline-assets /path/to/saved/web` instead of `--compare`. This writes `artifacts/cursor-performance.json`. Synthetic touches are requested every 4 ms to exercise cursor batching; this does not imply that a real phone browser delivers events at that rate.
 
-## Component behavior
+The cursor update comparison against the working tree before these fixes is recorded in [cursor-performance.json](artifacts/cursor-performance.json). Across three alternating runs, median synthetic movement-to-send delay fell from 5.3–5.4 ms to 0.1–0.2 ms; p95 fell from 7.3–7.4 ms to 0.3–0.7 ms. All 160 synthetic samples produced cursor sends in each new run, compared with 93–94 coalesced sends before. Both versions scheduled zero idle animation frames. Unit tests also replay 60, 90, 120, 144, and 240 Hz samples, verify bounded output for 1,000 Hz input, and check that the full distance arrives before release. These results cover local client dispatch, not phone-to-desktop latency or physical touchpad equivalence.
 
-The supplied `OriginButton` remains available, including its demo, hover/focus behavior, and `cn` utility. Its circle geometry, 0.5-second duration, and `[0.16, 1, 0.3, 1]` easing are shared through `OriginFill`. Touch pointer-up and cancellation also clear hover to avoid a stuck fill.
-
-The pad mounts the decorative fill and a 40-pixel LiveOrb in the bottom-left Super zone. The existing Super button still owns pointer capture and keyboard input. Accepted pad-Super holds send an animation event carrying the touch origin; keyboard activation uses the center of the Super zone. Hover, right-click, regular gestures, and the keyboard sheet's Super control do not fill the pad. Release, cancellation, disconnect, or panel changes clear it. The overlay ignores pointer events, clips to the rounded pad, and recalculates coverage on resize. Reduced motion uses an instant state change.
-
-The orb follows touches, blinks, and glances around when idle. A white face with black eyes uses difference blending inside the isolated pad, so it appears dark on the idle surface and inverts to white wherever the black fill passes beneath it. Both the animation and orb ignore pointer events: pressing the orb operates the existing Super zone. Its position remains within that zone when the keyboard reduces the pad height.
-
-The supplied orb supports theme, custom-color, and wash variants. Ghostpad uses its monochrome variant; the separate demo preserves the other examples without replacing the OriginButton demo. No extra packages were needed. The integration corrects the pasted shader-error string literals, cleans up failed GL initialization, reacts to touch-down as well as pointer movement, requests low-power rendering, and avoids rendering while hidden or off-screen. Reduced motion holds a centered gaze without an animation loop. A static CSS face remains visible when WebGL is unavailable or lost, and the engine rebuilds on context restoration.
-
-## Setup references
-
-The manual setup follows [shadcn's installation guide](https://ui.shadcn.com/docs/installation/manual), the [Tailwind CLI guide](https://tailwindcss.com/docs/installation/tailwind-cli), and [Motion's React installation guide](https://motion.dev/docs/react-installation). For a new standalone React project, initialize shadcn with `npx shadcn@latest init`; this embedded Rust application already has its manual configuration. Future components can be added from the repository root with `npx shadcn@latest add <component>`.
+The recorded comparison against `586da29` reduced the served page from 492,052 to 58,717 bytes (88.1%). The effects script shrank from 410,854 to 1,803 bytes. Over roughly two idle seconds per run, the previous version requested 120–121 animation frames; the optimized version requested zero. Median startup-to-controller time across three runs was 344.7 ms before and 59.1 ms after. These are desktop Chromium results with a phone-sized viewport; the old orb used SwiftShader software rendering. They do not establish iPhone performance, battery savings, or end-to-end cursor latency. Raw per-run timings and limitations are retained in the JSON report.

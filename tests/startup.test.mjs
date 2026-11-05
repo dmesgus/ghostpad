@@ -2,15 +2,19 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
-const script = readFileSync(new URL('../web/gestures.js',import.meta.url),'utf8').replace('export class Gestures','class Gestures') + '\n' + readFileSync(new URL('../web/text.js',import.meta.url),'utf8').replaceAll('export function','function') + '\n' + readFileSync(new URL('../web/app.js',import.meta.url),'utf8').replace("import { Gestures } from './gestures.js';",'').replace("import { textEdit, normalizeText } from './text.js';",'');
+const script = readFileSync(new URL('../web/gestures.js',import.meta.url),'utf8').replace('export class Gestures','class Gestures') + '\n' + readFileSync(new URL('../web/text.js',import.meta.url),'utf8').replaceAll('export function','function') + '\n' + readFileSync(new URL('../web/scroll.js',import.meta.url),'utf8').replace('export class ScrollMomentum','class ScrollMomentum') + '\n' + readFileSync(new URL('../web/app.js',import.meta.url),'utf8').replace("import { Gestures } from './gestures.js';",'').replace("import { ScrollMomentum } from './scroll.js';",'').replace("import { textEdit, normalizeText } from './text.js';",'');
 function start({key='a'.repeat(64),blocked=false,historyBlocked=false}={}) {
- const elements=new Map(),timeouts=new Map(),stored=new Map(),sockets=[],fillEvents=[];let next=1;
+ const elements=new Map(),timeouts=new Map(),deadlines=new Map(),frames=new Map(),stored=new Map(),sockets=[],fillEvents=[],documentHandlers={},windowHandlers={};let next=1,now=0;
  const element=id=>{if(!elements.has(id))elements.set(id,{textContent:'',value:'',checked:false,hidden:['keyboard-panel','keyboard'].includes(id),open:false,setPointerCapture(){},closest(){return null},contains(){return true},focus(){this.handlers.focus?.()},blur(){},querySelectorAll(){return []},classList:{toggle(){},remove(){}},handlers:{},attrs:{},addEventListener(type,fn){this.handlers[type]=fn},setAttribute(name,value){this.attrs[name]=value;if(name==='open')this.open=true},removeAttribute(name){if(name==='open')this.open=false}});return elements.get(id)};
- class Socket { static OPEN=1;static CLOSED=3;readyState=0;bufferedAmount=0;sent=[];constructor(){if(blocked)throw Error('Blocked');sockets.push(this)}send(value){this.sent.push(value)}close(){this.readyState=3} }
- const window={setTimeout(fn){const id=next++;timeouts.set(id,fn);return id},setInterval(){return next++},addEventListener(){},dispatchEvent(event){if(event.type==='ghostpad-super-fill')fillEvents.push(event.detail)}};
- const context={document:{body:{classList:{toggle(){}}},hidden:false,getElementById:element,addEventListener(){}},window,localStorage:{getItem:k=>stored.get(k)||null,setItem:(k,v)=>stored.set(k,v)},location:{hash:key?'#key='+key:'',pathname:'/',protocol:'http:',host:'192.168.1.42:8765'},history:{replaceState(){if(historyBlocked)throw Error('Unavailable')}},WebSocket:Socket,URLSearchParams,Event,CustomEvent,performance:{now:()=>0},setTimeout:window.setTimeout,clearTimeout:id=>timeouts.delete(id),clearInterval(){},requestAnimationFrame(){return next++},cancelAnimationFrame(){}};
+ class Socket { static OPEN=1;static CLOSED=3;readyState=0;bufferedAmount=0;sent=[];sentAt=[];constructor(){if(blocked)throw Error('Blocked');sockets.push(this)}send(value){this.sent.push(value);this.sentAt.push(now)}close(){this.readyState=3} }
+ const window={setTimeout(fn,delay=0){const id=next++;timeouts.set(id,fn);deadlines.set(id,now+delay);return id},setInterval(){return next++},addEventListener(type,fn){windowHandlers[type]=fn},dispatchEvent(event){if(event.type==='ghostpad-super-fill')fillEvents.push(event.detail)}};
+ const context={document:{body:{classList:{toggle(){}}},hidden:false,getElementById:element,addEventListener(type,fn){documentHandlers[type]=fn}},window,localStorage:{getItem:k=>stored.get(k)||null,setItem:(k,v)=>stored.set(k,v)},location:{hash:key?'#key='+key:'',pathname:'/',protocol:'http:',host:'192.168.1.42:8765'},history:{replaceState(){if(historyBlocked)throw Error('Unavailable')}},WebSocket:Socket,URLSearchParams,Event,CustomEvent,performance:{now:()=>now},setTimeout:window.setTimeout,clearTimeout:id=>{timeouts.delete(id);deadlines.delete(id)},clearInterval(){},requestAnimationFrame(fn){const id=next++;frames.set(id,fn);return id},cancelAnimationFrame:id=>frames.delete(id)};
  runInNewContext(script,context);
- return {element,sockets,timeouts,stored,fillEvents};
+ return {element,sockets,timeouts,frames,stored,fillEvents,document:context.document,documentHandlers,windowHandlers,setTime(time){now=time},advance(time){
+  for(;;){const due=[...deadlines].filter(([,at])=>at<=time).sort((a,b)=>a[1]-b[1])[0];if(!due)break;
+   const [id,at]=due,fn=timeouts.get(id);timeouts.delete(id);deadlines.delete(id);now=at;fn?.();}
+  now=time;
+ },frameAt(time){now=time;const callbacks=[...frames.values()];frames.clear();callbacks.forEach(fn=>fn(time))}};
 }
 test('page startup pairs and reaches ready with browser-shaped WebSocket events',()=>{const s=start();const ws=s.sockets[0];ws.readyState=1;ws.onopen();assert.equal(ws.sent[0],'a'.repeat(64));ws.onmessage({data:'ready:linux'});assert.equal(s.element('status').textContent,'Connected');assert.equal(s.timeouts.size,0);});
 test('blocked WebSocket displays a visible error instead of throwing',()=>{const s=start({blocked:true});assert.equal(s.element('status').textContent,'Connection blocked');assert.match(s.element('hint').textContent,/Safari/);assert.equal(s.element('reload').hidden,false);});
@@ -21,10 +25,81 @@ test('settings open and close when native dialog support is missing',()=>{const 
 
 function ready(s) {const ws=s.sockets[0];ws.readyState=1;ws.onopen();ws.onmessage({data:'ready:linux'});return ws;}
 const packets=ws=>ws.sent.filter(v=>typeof v!=='string').map(v=>[...new Uint8Array(v)]);
-function touch(s,type,points) {s.element('pad').handlers[type]({preventDefault(){},target:s.element('pad'),touches:points.map(([clientX,clientY])=>({clientX,clientY,target:s.element('pad')}))});}
+function touch(s,type,points,ended=[]) {if(type==='touchstart')s.documentHandlers.touchstart();const point=([clientX,clientY],identifier)=>({identifier,clientX,clientY,target:s.element('pad')});s.element('pad').handlers[type]({preventDefault(){},target:s.element('pad'),touches:points.map(point),changedTouches:ended.map(point)});}
 test('Super hold then two-finger resize sends modifier before button and movement',()=>{const s=start(),ws=ready(s);s.element('mod-super').handlers.pointerdown({preventDefault(){},pointerId:1,pointerType:'touch'});touch(s,'touchstart',[[10,10],[30,10]]);touch(s,'touchmove',[[20,20],[40,20]]);touch(s,'touchend',[]);const p=packets(ws);assert.deepEqual(p.slice(0,2),[[9,227],[12]]);assert.equal(p[2][0],1);assert.deepEqual(p[3],[13]);assert.equal(s.element('mod-super').attrs['aria-pressed'],'true');s.element('mod-super').handlers.pointerup({pointerId:1});assert.deepEqual(packets(ws).at(-1),[10,227]);});
 test('movement sends immediately and coalesces only rapid subsequent events',()=>{const s=start(),ws=ready(s);touch(s,'touchstart',[[0,0]]);touch(s,'touchmove',[[20,0]]);assert.equal(packets(ws).length,1);touch(s,'touchmove',[[30,0]]);touch(s,'touchmove',[[40,0]]);assert.equal(packets(ws).length,1);[...s.timeouts.values()].at(-1)();assert.equal(packets(ws).length,2);const b=new DataView(ws.sent.at(-1));assert.equal(b.getFloat32(1,true),28);});
-const tapKey=(s,key,area='keyboard',shift=false)=>s.element(area).handlers.click({target:{closest:()=>({dataset:{key:String(key),shift:String(shift)}})}});
+const motionTotal=(ws,opcode=1)=>packets(ws).filter(p=>p[0]===opcode).reduce((sum,p)=>{
+ const view=new DataView(Uint8Array.from(p).buffer);return [sum[0]+view.getFloat32(1,true),sum[1]+view.getFloat32(5,true)];
+},[0,0]);
+test('cursor updates follow 60–240 Hz touch input without adding another frame of delay',()=>{
+ for(const hz of [60,90,120,144,240]){
+  const s=start(),ws=ready(s);touch(s,'touchstart',[[100,100]]);
+  for(let i=1;i<=hz;i++){
+   const time=i*1000/hz;s.advance(time);touch(s,'touchmove',[[100+i*3,100+i]]);
+   assert.equal(packets(ws).length,i,`${hz} Hz sample ${i} must send immediately`);
+   assert.equal(ws.sentAt.at(-1),time);
+  }
+  touch(s,'touchend',[]);assert(packets(ws).every(p=>p[0]===1));
+  assert(Math.abs(motionTotal(ws)[0]-hz*3*1.4)<.001);
+  const before=packets(ws).length;s.advance(1200);assert.equal(packets(ws).length,before);
+  assert.equal(s.frames.size,0,'Cursor motion must not have an animation or inertia loop');
+ }
+});
+test('very high sampling stays below the receiver rate limit and preserves distance',()=>{
+ const s=start(),ws=ready(s);touch(s,'touchstart',[[100,100]]);
+ for(let i=1;i<=1000;i++){s.advance(i);touch(s,'touchmove',[[100+i*3,100]]);}
+ assert(packets(ws).length>=240&&packets(ws).length<=251);
+ const times=ws.sentAt.slice(1);for(let i=1;i<times.length;i++)assert(times[i]-times[i-1]>=4);
+ touch(s,'touchend',[]);assert(Math.abs(motionTotal(ws)[0]-4200)<.001);assert.equal(s.timeouts.size,0);
+});
+test('new strokes start immediately and overdue timers cannot hold fresh movement',()=>{
+ const s=start(),ws=ready(s);touch(s,'touchstart',[[100,100]]);touch(s,'touchmove',[[110,100]]);
+ s.setTime(1);touch(s,'touchmove',[[112,100]]);assert.equal(packets(ws).length,1);
+ s.setTime(6);touch(s,'touchmove',[[114,100]]);assert.equal(packets(ws).length,2);
+ assert.equal(s.timeouts.size,1,'Only the hold timer remains');
+ touch(s,'touchend',[]);s.setTime(7);touch(s,'touchstart',[[200,100]]);touch(s,'touchmove',[[210,100]]);
+ assert.equal(packets(ws).length,3);assert.equal(ws.sentAt.at(-1),7);touch(s,'touchend',[]);
+ assert(packets(ws).every(p=>p[0]===1));assert.equal(s.timeouts.size,0);
+});
+test('small corrections and landing jitter remain distinct through the wire',()=>{
+ const s=start(),ws=ready(s);touch(s,'touchstart',[[100,100]]);touch(s,'touchmove',[[105,100]]);
+ s.advance(450);touch(s,'touchend',[]);assert.deepEqual(packets(ws).map(p=>p[0]),[1]);
+ touch(s,'touchstart',[[200,200]]);touch(s,'touchmove',[[201,201]]);touch(s,'touchend',[]);
+ assert.deepEqual(packets(ws).map(p=>p[0]),[1,3]);
+});
+test('the last touchend position reaches the cursor before a drag releases',()=>{
+ for(const drag of [false,true]){
+  const s=start(),ws=ready(s);touch(s,'touchstart',[[100,100]]);
+  if(drag)s.advance(400);
+  touch(s,'touchmove',[[110,105]]);touch(s,'touchend',[],[[115,108]]);
+  const total=motionTotal(ws);assert(Math.abs(total[0]-21)<1e-6);assert(Math.abs(total[1]-11.2)<1e-6);
+  const codes=packets(ws).map(p=>p[0]);assert.deepEqual(codes,drag?[5,1,1,6]:[1,1]);
+  assert.equal(s.timeouts.size,0);assert.equal(s.frames.size,0);
+ }
+});
+test('movement reported only on touchend is preserved without an accidental click',()=>{
+ const s=start(),ws=ready(s);touch(s,'touchstart',[[100,100]]);touch(s,'touchend',[],[[105,100]]);
+ assert.deepEqual(packets(ws).map(p=>p[0]),[1]);assert.equal(motionTotal(ws)[0],7);
+});
+test('a stale touchend after cancellation cannot replay final movement',()=>{
+ const s=start(),ws=ready(s);touch(s,'touchstart',[[100,100]]);touch(s,'touchmove',[[110,100]]);
+ s.element('pad').handlers.touchcancel();const before=packets(ws).length;
+ touch(s,'touchend',[],[[150,100]]);s.advance(500);assert.equal(packets(ws).length,before);
+});
+test('final pinch movement is sent before lifting native contacts',()=>{
+ const s=start(),ws=ready(s);touch(s,'touchstart',[[100,100],[200,100]]);
+ touch(s,'touchmove',[[90,100],[210,100]]);touch(s,'touchend',[],[[80,100],[220,100]]);
+ assert.deepEqual(packets(ws).map(p=>p[0]),[15,15,16]);
+ assert(Math.abs(new DataView(ws.sent.at(-2)).getFloat32(1,true)-1.4)<1e-6);
+});
+test('both scrolling surfaces preserve the final release position',()=>{
+ for(const strip of [true,false]){
+  const s=start(),ws=ready(s),send=strip?stripTouch:touch,points=y=>strip?[[350,y]]:[[100,y],[200,y]];
+  send(s,'touchstart',points(100));s.advance(16);send(s,'touchmove',points(120));
+  s.advance(32);send(s,'touchend',[],points(130));assert.equal(motionTotal(ws,2)[1],-30);
+ }
+});
+const tapKey=(s,key,area='keyboard',shift=false)=>s.element(area).handlers.click({target:{closest:()=>({dataset:{key:String(key),shift:String(shift)},closest:selector=>selector==='#native-tools'&&area==='native-tools'})}});
 test('tap drag flushes all selected-text motion before button release',()=>{
  const s=start(),ws=ready(s);touch(s,'touchstart',[[100,100]]);touch(s,'touchend',[]);
  touch(s,'touchstart',[[100,100]]);touch(s,'touchmove',[[120,110]]);
@@ -108,6 +183,20 @@ test('Super release during resize releases the button before the modifier',()=>{
 test('native realtime typing sends text and local deletion sends Backspace',()=>{const s=start(),ws=ready(s),input=s.element('native-input');input.value='Hi!';input.handlers.input();assert.deepEqual(packets(ws).at(-1),[14,72,105,33]);input.value='Hi';input.handlers.input();assert.deepEqual(packets(ws).at(-1),[11,42]);});
 test('native input rejects unsupported text without sending a partial word',()=>{const s=start(),ws=ready(s),input=s.element('native-input');input.value='Hello 日本';input.handlers.input();assert.deepEqual(packets(ws),[]);assert.match(s.element('typing-help').textContent,/US keyboard/);});
 test('composition is sent once after commit',()=>{const s=start(),ws=ready(s),input=s.element('native-input');input.handlers.compositionstart();input.value='test';input.handlers.input();assert.deepEqual(packets(ws),[]);input.handlers.compositionend();input.handlers.input();assert.deepEqual(packets(ws),[[14,116,101,115,116]]);});
+test('accessory navigation waits for composition and does not erase the uncommitted input',()=>{
+ const s=start(),ws=ready(s),input=s.element('native-input');
+ input.handlers.compositionstart();input.value='test';input.handlers.input();tapKey(s,40,'native-tools');
+ assert.deepEqual(packets(ws),[]);assert.equal(input.value,'test');
+ input.handlers.compositionend();tapKey(s,40,'native-tools');
+ assert.deepEqual(packets(ws),[[14,116,101,115,116],[11,40]]);
+});
+test('accessory navigation stays ordered after queued text and subsequent typing starts fresh',()=>{
+ const s=start(),ws=ready(s),input=s.element('native-input');
+ input.value='a'.repeat(240);input.handlers.input();tapKey(s,80,'native-tools');
+ input.value='x';input.handlers.input();
+ while(s.timeouts.size) {const [id,fn]=s.timeouts.entries().next().value;s.timeouts.delete(id);fn();}
+ assert.deepEqual(packets(ws),[[14,...Array(120).fill(97)],[14,...Array(120).fill(97)],[11,80],[14,120]]);
+});
 test('phone keyboard mode focuses the field and sends text immediately',()=>{const s=start(),ws=ready(s);s.element('native-mode').onclick();const input=s.element('native-input');input.value='Hello';input.handlers.input();assert.deepEqual(packets(ws).at(-1),[14,72,101,108,108,111]);});
 test('native focus releases modifiers before plain typing',()=>{const s=start(),ws=ready(s);holdSuper(s);s.element('mod-ctrl').onclick();s.element('native-input').focus();assert.equal(s.element('key-super').attrs['aria-pressed'],'false');assert.deepEqual(packets(ws).at(-1),[7]);assert.equal(s.element('mod-ctrl').attrs['aria-pressed'],'false');});
 
@@ -141,9 +230,11 @@ test('initial pinch drift sends only native zoom packets, with no wheel scroll',
  assert.deepEqual(packets(ws).map(p=>p[0]),[15,15,16]);
 });
 
-function stripTouch(s,type,points) {
+function stripTouch(s,type,points,ended=[]) {
+ if(type==='touchstart')s.documentHandlers.touchstart();
  const target=s.element('scroll-zone');target.closest=selector=>selector==='#scroll-zone'?target:null;
- s.element('pad').handlers[type]({preventDefault(){},target,touches:points.map(([clientX,clientY],identifier)=>({identifier,clientX,clientY,target}))});
+ const point=([clientX,clientY],identifier)=>({identifier,clientX,clientY,target});
+ s.element('pad').handlers[type]({preventDefault(){},target,touches:points.map(point),changedTouches:ended.map(point)});
 }
 test('one-finger strip scrolling matches two-finger scroll packets in both axes',()=>{
  const a=start(),aw=ready(a),b=start(),bw=ready(b);
@@ -177,6 +268,65 @@ test('adding a finger stops strip scrolling until all fingers lift',()=>{
 test('canceled strip scrolling discards pending motion and releases input',()=>{
  const s=start(),ws=ready(s);stripTouch(s,'touchstart',[[350,100]]);stripTouch(s,'touchmove',[[350,120]]);stripTouch(s,'touchmove',[[350,140]]);
  s.element('pad').handlers.touchcancel();assert.deepEqual(packets(ws).map(p=>p[0]),[2,7]);assert.equal(s.timeouts.size,0);
+});
+
+function scrollFlick(s,strip=true,release=true) {
+ const send=strip?stripTouch:touch,points=y=>strip?[[350,y]]:[[100,y],[200,y]];
+ send(s,'touchstart',points(100));
+ for(let time=16;time<=64;time+=16){s.setTime(time);send(s,'touchmove',points(100+time));}
+ s.setTime(65);if(release)send(s,'touchend',[]);
+}
+test('strip and two-finger flicks send matching momentum after release and then stop',()=>{
+ const a=start(),aw=ready(a),b=start(),bw=ready(b);scrollFlick(a);scrollFlick(b,false);
+ const before=packets(aw).length;
+ for(let time=81;time<2065;time+=16){a.frameAt(time);b.frameAt(time);}
+ assert.deepEqual(packets(aw),packets(bw));assert(packets(aw).length>before+10);
+ assert(packets(aw).every(p=>p[0]===2));assert.equal(a.frames.size,0);assert.equal(a.timeouts.size,0);
+ const after=packets(aw).length;a.frameAt(3000);assert.equal(packets(aw).length,after);
+});
+test('momentum respects natural scrolling and speed, independently of pointer sensitivity',()=>{
+ const a=start(),aw=ready(a),b=start(),bw=ready(b);
+ b.element('natural').checked=false;b.element('sensitivity').value='3';b.element('sensitivity').oninput();
+ b.element('scroll-presets').handlers.click({target:{closest:()=>({dataset:{speed:'1.6'}})}});
+ scrollFlick(a);scrollFlick(b);a.frameAt(81);b.frameAt(81);
+ const dy=ws=>new DataView(ws.sent.at(-1)).getFloat32(5,true);
+ assert(Math.abs(dy(bw)/dy(aw)+1.6)<1e-6);
+});
+test('a new strip touch brakes queued momentum without a click',()=>{
+ const s=start(),ws=ready(s);scrollFlick(s);s.frameAt(81);s.frameAt(85);
+ assert.equal(s.timeouts.size,1,'A fast frame has an unsent scroll delta');
+ const before=packets(ws).length;stripTouch(s,'touchstart',[[350,250]]);
+ assert.equal(s.timeouts.size,0);assert.equal(s.frames.size,0);
+ s.frameAt(101);stripTouch(s,'touchend',[]);s.frameAt(117);
+ assert.equal(packets(ws).length,before);
+});
+for(const stop of ['touchcancel','settings','keyboard','disconnect','socket','pagehide','hidden','blur','pointerdown','keydown']) test(`${stop} cancels momentum without later scroll packets`,()=>{
+ const s=start(),ws=ready(s);scrollFlick(s);s.frameAt(81);
+ if(stop==='touchcancel')s.element('pad').handlers.touchcancel();
+ else if(stop==='settings')s.element('settings-open').onclick();
+ else if(stop==='keyboard')s.element('keyboard-toggle').onclick();
+ else if(stop==='disconnect')s.element('disconnect').onclick();
+ else if(stop==='socket'){ws.readyState=3;ws.onclose();}
+ else if(stop==='hidden'){s.document.hidden=true;s.documentHandlers.visibilitychange();}
+ else if(stop==='pagehide'||stop==='blur')s.windowHandlers[stop]();
+ else s.documentHandlers[stop]();
+ assert.equal(s.frames.size,0);
+ const before=packets(ws).length;s.frameAt(97);s.frameAt(113);assert.equal(packets(ws).length,before);
+});
+test('a stationary release and an interrupted strip gesture never launch momentum',()=>{
+ for(const interrupted of [false,true]){
+  const s=start(),ws=ready(s);scrollFlick(s,true,false);
+  if(interrupted){stripTouch(s,'touchstart',[[350,164],[350,200]]);stripTouch(s,'touchend',[[350,164]]);}
+  else s.setTime(200);
+  stripTouch(s,'touchend',[]);const before=packets(ws).length;s.frameAt(216);
+  assert.equal(s.frames.size,0);assert.equal(packets(ws).length,before);
+ }
+});
+test('staggered two-finger release waits for both fingers before coasting',()=>{
+ const s=start(),ws=ready(s);scrollFlick(s,false,false);
+ touch(s,'touchend',[[200,164]]);assert.equal(s.frames.size,0);
+ s.setTime(70);touch(s,'touchend',[]);assert.equal(s.frames.size,1);
+ const before=packets(ws).length;s.frameAt(86);assert(packets(ws).length>before);
 });
 test('dedicated plus sends Shift and equals, then leaves equals unmodified',()=>{
  const s=start(),ws=ready(s);tapKey(s,46,'keyboard',true);tapKey(s,46);
@@ -214,4 +364,13 @@ for (const target of ['keyboard-toggle','settings-open','disconnect']) test(`${t
 test('disconnect clears the pad fill without replaying it after reconnect',()=>{
  const s=start(),ws=ready(s);holdSuper(s,'mod-super');ws.readyState=3;ws.onclose();
  assert.equal(s.fillEvents.at(-1).active,false);
+});
+
+for (const source of ['slider','preset']) test(`${source} updates pointer speed before the next gesture`,()=>{
+ const s=start(),ws=ready(s);
+ if(source==='slider') {s.element('sensitivity').value='2';s.element('sensitivity').oninput();}
+ else s.element('tracking-presets').handlers.click({target:{closest:()=>({dataset:{speed:'2'}})}});
+ touch(s,'touchstart',[[100,100]]);touch(s,'touchmove',[[120,110]]);touch(s,'touchend',[]);
+ const view=new DataView(ws.sent.find(p=>typeof p!=='string'&&new Uint8Array(p)[0]===1));
+ assert.equal(view.getFloat32(1,true),40);assert.equal(view.getFloat32(5,true),20);
 });

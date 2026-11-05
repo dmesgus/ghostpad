@@ -157,7 +157,7 @@ fn handle(mut c: impl transport::Stream, state: &State) -> io::Result<()> {
             "/" => "page",
             "/ws" => "WebSocket",
             "/health" => "health check",
-            "/style.css" | "/app.js" | "/gestures.js" | "/icon.svg" => "asset",
+            "/style.css" | "/app.js" | "/gestures.js" | "/scroll.js" | "/icon.svg" => "asset",
             _ => "unknown path",
         };
         eprintln!("ghostpad: received GET for {resource}");
@@ -261,6 +261,7 @@ fn handle(mut c: impl transport::Stream, state: &State) -> io::Result<()> {
             "/style.css" => ("text/css", include_bytes!("../web/style.css")),
             "/app.js" => ("text/javascript", include_bytes!("../web/app.js")),
             "/gestures.js" => ("text/javascript", include_bytes!("../web/gestures.js")),
+            "/scroll.js" => ("text/javascript", include_bytes!("../web/scroll.js")),
             "/text.js" => ("text/javascript", include_bytes!("../web/text.js")),
             "/icon.svg" => ("image/svg+xml", include_bytes!("../web/icon.svg")),
             "/health" => ("text/plain", b"ghostpad/1"),
