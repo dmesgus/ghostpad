@@ -77,9 +77,20 @@ main {
 /* The fill is decorative: pointer hit testing always reaches the original zones. */
 #super-fill-root { position: absolute; inset: 0; overflow: hidden; pointer-events: none; border-radius: inherit; }
 .super-fill { background: #000; }
-/* The touch surface stays blank, including while Super is held. */
+/* Difference blending inverts the face exactly where the wave passes beneath it. */
+.super-orb {
+  position: absolute;
+  left: 18px;
+  bottom: calc((var(--thumb-height) - 40px) / 2);
+  width: 40px;
+  height: 40px;
+  pointer-events: none;
+  mix-blend-mode: difference;
+}
+/* Only the small Super marker sits on the otherwise uninterrupted surface. */
 #pad {
   --thumb-height: 80px;
+  isolation: isolate;
   position: relative;
   flex: 1;
   min-height: max(150px, env(safe-area-inset-top));

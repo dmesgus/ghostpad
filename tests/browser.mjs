@@ -4,7 +4,7 @@ import { readFile, mkdir } from 'node:fs/promises';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 const root = new URL('../', import.meta.url);
-const browser = await chromium.launch({executablePath: process.env.CHROMIUM_PATH || '/usr/bin/chromium', args:['--no-sandbox']});
+const browser = await chromium.launch({executablePath: process.env.CHROMIUM_PATH || '/usr/bin/chromium', args:['--no-sandbox','--enable-unsafe-swiftshader']});
 try {
  const context = await browser.newContext({viewport:{width:390,height:844},isMobile:true,hasTouch:true,deviceScaleFactor:2});
  const page = await context.newPage(), errors=[], packets=[];
@@ -33,9 +33,29 @@ try {
    else {packets.push([...data]);if(data[0]===8)ws.send('pong');}
   });
  });
+ await page.addInitScript(()=>{
+  window.orbDraws=0;
+  const draw=WebGLRenderingContext.prototype.drawArrays;
+  WebGLRenderingContext.prototype.drawArrays=function(...args){window.orbDraws++;return draw.apply(this,args);};
+ });
  await page.goto(`http://ghostpad.test/#key=${'a'.repeat(64)}`);
  await page.waitForFunction(()=>document.getElementById('status').textContent==='Preview');
  await page.waitForSelector('#super-fill-root .origin-fill', {state:'attached'});
+ await page.waitForSelector('[data-slot="live-orb"][data-renderer="webgl"]');
+ await page.waitForFunction(()=>window.orbDraws>1);
+ const orb=page.locator('[data-slot="live-orb"]');
+ const orbBox=await orb.boundingBox();
+ const orbPoint=[orbBox.x+orbBox.width/2,orbBox.y+orbBox.height/2];
+ assert.equal(await page.evaluate(([x,y])=>document.elementFromPoint(x,y).id,orbPoint),'mod-super','Touching the orb must reach the original Super zone');
+ assert.equal(await orb.evaluate(el=>getComputedStyle(el.parentElement).mixBlendMode),'difference');
+ // A touch makes the gaze respond without moving the character or sending pad packets.
+ await page.evaluate(()=>window.dispatchEvent(new PointerEvent('pointermove',{clientX:300,clientY:100})));
+ await page.waitForFunction(()=>{
+  const gl=document.querySelector('[data-slot="live-orb"] canvas').getContext('webgl');
+  const program=gl.getParameter(gl.CURRENT_PROGRAM);
+  return gl.getUniform(program,gl.getUniformLocation(program,'u_look'))[0]>.2;
+ });
+ assert.deepEqual(await orb.boundingBox(),orbBox,'Only the eyes should move');
  const fillActive=()=>page.locator('#super-fill-root .origin-fill').getAttribute('data-active');
  const waitForFill=scale=>page.waitForFunction(expected=>{
   const el=document.querySelector('#super-fill-root .origin-fill');
@@ -148,6 +168,13 @@ try {
  assert.deepEqual(packets.slice(from).filter(p=>p[0]!==8),[[4]],'RC touch must not become a pad tap');
  assert.equal(await fillActive(),'false','Right-click must not activate the Super fill');
  const superBox=await page.locator('#mod-super').boundingBox();
+ assert(orbBox.x>=superBox.x&&orbBox.y>=superBox.y&&orbBox.x+orbBox.width<=superBox.x+superBox.width&&orbBox.y+orbBox.height<=superBox.y+superBox.height,'Orb must stay within the Super zone');
+ from=packets.length;
+ await touch('touchStart',[orbPoint]);await waitForFill(1);
+ assert.equal(await page.locator('.super-fill').evaluate(el=>Number.parseFloat(el.style.left)),orbPoint[0]);
+ await page.screenshot({path:new URL('artifacts/orb-super.png',root).pathname});
+ await touch('touchEnd',[]);await waitForFill(0);
+ assert.deepEqual(packets.slice(from).filter(p=>p[0]!==8),[[9,227],[10,227]],'Orb must preserve momentary Super without clicking');
  const superPoint=[superBox.x+superBox.width/2,superBox.y+superBox.height/2];
  await touch('touchStart',[superPoint]);
  await page.waitForFunction(()=>document.querySelector('.super-fill').dataset.active==='true');
@@ -185,6 +212,10 @@ try {
  await touch('touchCancel',[]);
  await waitForFill(0);
  await page.emulateMedia({reducedMotion:'reduce'});
+ await page.waitForTimeout(100);
+ const stillFrames=await page.evaluate(()=>window.orbDraws);
+ await page.waitForTimeout(120);
+ assert.equal(await page.evaluate(()=>window.orbDraws),stillFrames,'Reduced motion must stop the orb animation loop');
  await touch('touchStart',[superPoint]);
  await waitForFill(1);
  await page.setViewportSize({width:420,height:844});
@@ -312,6 +343,26 @@ try {
  await page.locator('#forget').click();assert.equal(await page.evaluate(()=>localStorage.getItem('ghostpad.key')),'');
  await page.locator('#mod-super').tap();
  assert.equal(await fillActive(),'false','Unpaired touches must not activate the fill');
+ // Losing the GPU keeps a visible CSS face and the original Super control.
+ await page.evaluate(()=>{
+  const gl=document.querySelector('[data-slot="live-orb"] canvas').getContext('webgl');
+  window.orbContext=gl.getExtension('WEBGL_lose_context');
+  window.orbContext.loseContext();
+ });
+ await page.waitForSelector('[data-slot="live-orb"][data-renderer="fallback"]');
+ assert.equal(await orb.locator('span').count(),2,'Fallback must retain both eyes');
+ assert.equal(await page.evaluate(([x,y])=>document.elementFromPoint(x,y).id,orbPoint),'mod-super');
+ await page.evaluate(()=>window.orbContext.restoreContext());
+ await page.waitForSelector('[data-slot="live-orb"][data-renderer="webgl"]');
+ // A browser with no WebGL at all must also start and show the CSS fallback.
+ await page.addInitScript(()=>{
+  const getContext=HTMLCanvasElement.prototype.getContext;
+  HTMLCanvasElement.prototype.getContext=function(type,...args){return type==='webgl'?null:getContext.call(this,type,...args);};
+ });
+ await page.reload();
+ await page.waitForSelector('[data-slot="live-orb"][data-renderer="fallback"]');
+ assert.equal(await orb.locator('span').count(),2);
+ assert.equal(await page.locator('#status').textContent(),'Pair your phone');
  assert.deepEqual(errors,[]);
  console.log('Browser client: pairing, gestures, settings, reconnect, and forgetting passed. Screenshots: artifacts/.');
 } finally {await browser.close();}

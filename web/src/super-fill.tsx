@@ -1,6 +1,7 @@
 import * as React from 'react';
 import { createRoot } from 'react-dom/client';
 import { flushSync } from 'react-dom';
+import { LiveOrb } from '@/components/ui/live-orb';
 import { OriginFill, getCoverDiameter } from '@/components/ui/origin-button';
 
 type FillState = { active: boolean; x: number | null; y: number | null };
@@ -27,7 +28,12 @@ function SuperFill({ pad, zone }: { pad: HTMLElement; zone: HTMLElement }) {
     observer.observe(pad);
     return () => observer.disconnect();
   }, [state, pad, zone]);
-  return <OriginFill active={state.active} size={bounds.size} x={bounds.x} y={bounds.y} className="super-fill" />;
+  return <>
+    <OriginFill active={state.active} size={bounds.size} x={bounds.x} y={bounds.y} className="super-fill" />
+    <div className="super-orb" aria-hidden="true">
+      <LiveOrb size={40} variant="custom" color="#FFFFFF" eyeColor="#000000" theme="light" />
+    </div>
+  </>;
 }
 
 const pad = document.getElementById('pad');

@@ -1,6 +1,6 @@
 # Frontend setup
 
-Ghostpad uses TypeScript for gesture/network handling and a React island for the Super fill. React, React DOM, Motion, Tailwind CSS v4, esbuild, and the TypeScript types are installed and locked in `package-lock.json`. No framework migration or shadcn initialization is needed to build this checkout.
+Ghostpad uses TypeScript for gesture/network handling and a React island for the Super fill and LiveOrb. React, React DOM, Motion, Tailwind CSS v4, esbuild, and the TypeScript types are installed and locked in `package-lock.json`. No framework migration or shadcn initialization is needed to build this checkout.
 
 ## Paths
 
@@ -9,6 +9,7 @@ Ghostpad uses TypeScript for gesture/network handling and a React island for the
 | Reusable React components | `components/ui/` |
 | Supplied button and shared fill animation | `components/ui/origin-button.tsx` |
 | Button demo | `components/ui/demo.tsx` |
+| LiveOrb and its standalone demo | `components/ui/live-orb.tsx`, `components/ui/live-orb-demo.tsx` |
 | `cn` helper | `lib/utils.ts` |
 | Editable global styles and Tailwind theme | `web/src/style.css` |
 | Pad animation integration | `web/src/super-fill.tsx` |
@@ -36,7 +37,11 @@ The build type-checks both the gesture code and React components, bundles the Re
 
 The supplied `OriginButton` remains available, including its demo, hover/focus behavior, and `cn` utility. Its circle geometry, 0.5-second duration, and `[0.16, 1, 0.3, 1]` easing are shared through `OriginFill`. Touch pointer-up and cancellation also clear hover to avoid a stuck fill.
 
-The pad mounts only the decorative fill. The existing Super button still owns pointer capture and keyboard input. Accepted pad-Super holds send an animation event carrying the touch origin; keyboard activation uses the center of the Super zone. Hover, right-click, regular gestures, and the keyboard sheet's Super control do not fill the pad. Release, cancellation, disconnect, or panel changes clear it. The overlay ignores pointer events, clips to the rounded pad, and recalculates coverage on resize. Reduced motion uses an instant state change.
+The pad mounts the decorative fill and a 40-pixel LiveOrb in the bottom-left Super zone. The existing Super button still owns pointer capture and keyboard input. Accepted pad-Super holds send an animation event carrying the touch origin; keyboard activation uses the center of the Super zone. Hover, right-click, regular gestures, and the keyboard sheet's Super control do not fill the pad. Release, cancellation, disconnect, or panel changes clear it. The overlay ignores pointer events, clips to the rounded pad, and recalculates coverage on resize. Reduced motion uses an instant state change.
+
+The orb follows touches, blinks, and glances around when idle. A white face with black eyes uses difference blending inside the isolated pad, so it appears dark on the idle surface and inverts to white wherever the black fill passes beneath it. Both the animation and orb ignore pointer events: pressing the orb operates the existing Super zone. Its position remains within that zone when the keyboard reduces the pad height.
+
+The supplied orb supports theme, custom-color, and wash variants. Ghostpad uses its monochrome variant; the separate demo preserves the other examples without replacing the OriginButton demo. No extra packages were needed. The integration corrects the pasted shader-error string literals, cleans up failed GL initialization, reacts to touch-down as well as pointer movement, requests low-power rendering, and avoids rendering while hidden or off-screen. Reduced motion holds a centered gaze without an animation loop. A static CSS face remains visible when WebGL is unavailable or lost, and the engine rebuilds on context restoration.
 
 ## Setup references
 
