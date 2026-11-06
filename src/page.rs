@@ -17,11 +17,13 @@ pub fn page() -> &'static Page {
         let text = include_str!("../web/text.js").replace("export function", "function");
         let scroll = include_str!("../web/scroll.js")
             .replace("export class ScrollMomentum", "class ScrollMomentum");
+        let flow = include_str!("../web/flow.js").replace("export class InputFlow", "class InputFlow");
         let app = include_str!("../web/app.js")
             .replace("import { Gestures } from './gestures.js';", "")
             .replace("import { ScrollMomentum } from './scroll.js';", "")
+            .replace("import { InputFlow } from './flow.js';", "")
             .replace("import { textEdit, normalizeText } from './text.js';", "");
-        let script = format!("(function () {{\n{gestures}\n{text}\n{scroll}\n{app}\n}})();");
+        let script = format!("(function () {{\n{gestures}\n{text}\n{scroll}\n{flow}\n{app}\n}})();");
         let html = include_str!("../web/index.html")
             .replace(
                 "<link rel=\"stylesheet\" href=\"/style.css\">",
@@ -50,8 +52,8 @@ mod tests {
     fn phone_boot_is_self_contained() {
         let page = super::page();
         assert!(
-            page.html.len() < 70_000,
-            "Embedded UI exceeded its 70 KB budget"
+            page.html.len() < 75_000,
+            "Embedded UI exceeded its 75 KB budget (including input flow control)"
         );
         assert!(!page.html.contains("<link rel=\"stylesheet\""));
         assert!(!page.html.contains("<script src="));

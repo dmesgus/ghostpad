@@ -2,6 +2,7 @@
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import { resolve } from 'node:path';
+import { recordInput } from './support/receiver.mjs';
 import { browserPage } from './support/browser-page.mjs';
 
 const root=new URL('../',import.meta.url);
@@ -33,7 +34,7 @@ export async function profileBrowser(compare,baselineAssets) {
      route.fulfill({contentType:'text/html',body:source.page.html,headers:{'Content-Security-Policy':source.page.policy}}):route.fulfill({status:204}));
     await page.routeWebSocket('**/ws',ws=>ws.onMessage(data=>{
      if(typeof data==='string') ws.send('ready:preview');
-     else if(data[0]===8) ws.send('pong');
+     else recordInput(ws,data);
     }));
     await page.addInitScript(()=>{
      window.profile={frames:0,startupMs:0,handlerMs:[],sendMs:[],firstPending:null,measuring:false};
@@ -50,7 +51,7 @@ export async function profileBrowser(compare,baselineAssets) {
      };
      const send=WebSocket.prototype.send;
      WebSocket.prototype.send=function(data){
-      if(window.profile.measuring&&data instanceof ArrayBuffer&&new Uint8Array(data)[0]===1&&window.profile.firstPending!==null){
+      if(window.profile.measuring&&data instanceof ArrayBuffer&&(new Uint8Array(data)[0]===17?new Uint8Array(data)[3]:new Uint8Array(data)[0])===1&&window.profile.firstPending!==null){
        window.profile.sendMs.push(performance.now()-window.profile.firstPending);window.profile.firstPending=null;
       }
       return send.call(this,data);

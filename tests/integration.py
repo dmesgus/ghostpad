@@ -24,24 +24,45 @@ class Receiver(unittest.TestCase):
   cls.proc.terminate();cls.proc.wait(timeout=3);cls.proc.stderr.close()
  @classmethod
  def tearDownClass(cls):cls.stop();cls.tmp.cleanup()
- def ws(self,key=None,origin=None,tls=False):
+ def ws(self,key=None,origin=None,tls=False,flow=False):
   s=socket.create_connection(('127.0.0.1',self.port),2);s.settimeout(7)
   if tls:s=ssl._create_unverified_context().wrap_socket(s,server_hostname='localhost')
   host=f'127.0.0.1:{self.port}';origin=origin or f'{"https" if tls else "http"}://{host}'
-  s.sendall(f'GET /ws HTTP/1.1\r\nHost: {host}\r\nOrigin: {origin}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n'.encode())
+  protocol='Sec-WebSocket-Protocol: ghostpad.flow.v1\r\n' if flow else ''
+  s.sendall(f'GET /ws HTTP/1.1\r\nHost: {host}\r\nOrigin: {origin}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\n{protocol}Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n'.encode())
   data=b''
   while not data.endswith(b'\r\n\r\n'):data+=s.recv(1)
   if origin.startswith('https://evil'):self.assertIn(b'403',data);s.close();return
   self.assertIn(b'101 Switching',data)
+  if flow:self.assertIn(b'Sec-WebSocket-Protocol: ghostpad.flow.v1\r\n',data)
   self.send(s,1,(self.key if key is None else key).encode());return s
  def send(self,s,op,data):
   mask=b'abcd';s.sendall(bytes([0x80|op,0x80|len(data)])+mask+bytes(v^mask[i%4] for i,v in enumerate(data)))
  def recv(self,s):
-  h=s.recv(2)
-  if not h:return None
-  data=b''
-  while len(data)<h[1]:data+=s.recv(h[1]-len(data))
-  return data
+  def exact(n):
+   data=b''
+   while len(data)<n:
+    chunk=s.recv(n-len(data))
+    if not chunk:
+     if not data:return None
+     raise EOFError('Partial WebSocket frame')
+    data+=chunk
+   return data
+  h=exact(2)
+  return exact(h[1]) if h else None
+ def check_flow(self,tls=False):
+  with self.ws(flow=True,tls=tls) as s:
+   self.assertEqual(self.recv(s),b'ready:preview')
+   packets=[b'\x09\xe3',b'\x05',b'\x01'+struct.pack('<ff',1.25,-2.5),b'\x06',b'\x0a\xe3',b'\x0e'+b'a'*120,b'\x0f'+struct.pack('<f',1.2),b'\x10',b'\x07']
+   # Deliberately batch arrivals and delay consuming replies, as on a jittery link.
+   for seq,packet in enumerate(packets,1):self.send(s,2,b'\x11'+struct.pack('<H',seq)+packet)
+   time.sleep(.08)
+   for seq in range(1,len(packets)+1):self.assertEqual(self.recv(s),b'\x11'+struct.pack('<H',seq))
+   self.send(s,2,b'\x11'+struct.pack('<H',len(packets)+1)+b'\x08');self.assertEqual(self.recv(s),b'pong');self.assertEqual(self.recv(s),b'\x11'+struct.pack('<H',len(packets)+1))
+   # A duplicate must close and release the authenticated controller.
+   self.send(s,2,b'\x11'+struct.pack('<H',len(packets)+1)+b'\x05');self.assertIsNone(self.recv(s))
+  with self.ws(flow=True,tls=tls) as s:self.assertEqual(self.recv(s),b'ready:preview')
+ def test_acknowledged_input(self):self.check_flow()
  def test_assets_and_headers(self):
   c=http.client.HTTPConnection('127.0.0.1',self.port);c.request('GET','/');r=c.getresponse();self.assertEqual(r.status,200);self.assertIn("frame-ancestors 'none'",r.getheader('Content-Security-Policy'));self.assertIn(b'Tap to start typing',r.read());c.close()
  def test_bad_host(self):
@@ -70,5 +91,6 @@ class Receiver(unittest.TestCase):
   cert=str(pathlib.Path(self.tmp.name)/'cert.pem');key=str(pathlib.Path(self.tmp.name)/'key.pem')
   subprocess.run(['openssl','req','-x509','-newkey','rsa:2048','-nodes','-keyout',key,'-out',cert,'-days','1','-subj','/CN=localhost'],check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
   self.stop();self.start(['--cert',cert,'--key',key])
+  self.check_flow(tls=True)
   with self.ws(tls=True) as s:self.assertEqual(self.recv(s),b'ready:preview');self.send(s,2,b'\x08');self.assertEqual(self.recv(s),b'pong')
 if __name__=='__main__':unittest.main(verbosity=2)

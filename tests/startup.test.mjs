@@ -2,13 +2,13 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
-const script = readFileSync(new URL('../web/gestures.js',import.meta.url),'utf8').replace('export class Gestures','class Gestures') + '\n' + readFileSync(new URL('../web/text.js',import.meta.url),'utf8').replaceAll('export function','function') + '\n' + readFileSync(new URL('../web/scroll.js',import.meta.url),'utf8').replace('export class ScrollMomentum','class ScrollMomentum') + '\n' + readFileSync(new URL('../web/app.js',import.meta.url),'utf8').replace("import { Gestures } from './gestures.js';",'').replace("import { ScrollMomentum } from './scroll.js';",'').replace("import { textEdit, normalizeText } from './text.js';",'');
-function start({key='a'.repeat(64),blocked=false,historyBlocked=false}={}) {
+const script = readFileSync(new URL('../web/flow.js',import.meta.url),'utf8').replace('export class InputFlow','class InputFlow') + '\n' + readFileSync(new URL('../web/gestures.js',import.meta.url),'utf8').replace('export class Gestures','class Gestures') + '\n' + readFileSync(new URL('../web/text.js',import.meta.url),'utf8').replaceAll('export function','function') + '\n' + readFileSync(new URL('../web/scroll.js',import.meta.url),'utf8').replace('export class ScrollMomentum','class ScrollMomentum') + '\n' + readFileSync(new URL('../web/app.js',import.meta.url),'utf8').replace("import { Gestures } from './gestures.js';",'').replace("import { ScrollMomentum } from './scroll.js';",'').replace("import { InputFlow } from './flow.js';",'').replace("import { textEdit, normalizeText } from './text.js';",'');
+function start({key='a'.repeat(64),blocked=false,historyBlocked=false,flow=false}={}) {
  const elements=new Map(),timeouts=new Map(),deadlines=new Map(),frames=new Map(),stored=new Map(),sockets=[],fillEvents=[],documentHandlers={},windowHandlers={};let next=1,now=0;
- const element=id=>{if(!elements.has(id))elements.set(id,{textContent:'',value:'',checked:false,hidden:['keyboard-panel','keyboard'].includes(id),open:false,setPointerCapture(){},click(){this.onclick?.()},closest(){return null},contains(){return true},focus(){this.handlers.focus?.()},blur(){},querySelectorAll(){return []},classList:{toggle(){},remove(){}},handlers:{},attrs:{},addEventListener(type,fn){this.handlers[type]=fn},setAttribute(name,value){this.attrs[name]=value;if(name==='open')this.open=true},removeAttribute(name){if(name==='open')this.open=false}});return elements.get(id)};
- class Socket { static OPEN=1;static CLOSED=3;readyState=0;bufferedAmount=0;sent=[];sentAt=[];constructor(){if(blocked)throw Error('Blocked');sockets.push(this)}send(value){this.sent.push(value);this.sentAt.push(now)}close(){this.readyState=3} }
+ const element=id=>{if(!elements.has(id))elements.set(id,{textContent:'',value:'',checked:false,hidden:['keyboard-panel','keyboard'].includes(id),open:false,setPointerCapture(){},click(){this.onclick?.({detail:0})},closest(){return null},contains(){return true},focus(){this.handlers.focus?.()},blur(){},querySelectorAll(){return []},getBoundingClientRect(){return {height:200}},style:{setProperty(){},removeProperty(){}},querySelector(){return element('sheet-scroll')},classList:{toggle(){},remove(){},add(){}},handlers:{},attrs:{},addEventListener(type,fn){this.handlers[type]=fn},setAttribute(name,value){this.attrs[name]=value;if(name==='open')this.open=true},removeAttribute(name){if(name==='open')this.open=false}});return elements.get(id)};
+ class Socket { static OPEN=1;static CLOSED=3;readyState=0;bufferedAmount=0;sent=[];sentAt=[];protocol=flow?'ghostpad.flow.v1':'';constructor(){if(blocked)throw Error('Blocked');sockets.push(this)}send(value){this.sent.push(value);this.sentAt.push(now)}close(){this.readyState=3} }
  const window={setTimeout(fn,delay=0){const id=next++;timeouts.set(id,fn);deadlines.set(id,now+delay);return id},setInterval(){return next++},addEventListener(type,fn){windowHandlers[type]=fn},dispatchEvent(event){if(event.type==='ghostpad-super-fill')fillEvents.push(event.detail)}};
- const context={document:{body:{classList:{toggle(){}}},hidden:false,getElementById:element,addEventListener(type,fn){documentHandlers[type]=fn}},window,localStorage:{getItem:k=>stored.get(k)||null,setItem:(k,v)=>stored.set(k,v)},location:{hash:key?'#key='+key:'',pathname:'/',protocol:'http:',host:'192.168.1.42:8765'},history:{replaceState(){if(historyBlocked)throw Error('Unavailable')}},WebSocket:Socket,URLSearchParams,Event,CustomEvent,performance:{now:()=>now},setTimeout:window.setTimeout,clearTimeout:id=>{timeouts.delete(id);deadlines.delete(id)},clearInterval(){},requestAnimationFrame(fn){const id=next++;frames.set(id,fn);return id},cancelAnimationFrame:id=>frames.delete(id)};
+ const context={document:{body:{classList:{toggle(){},remove(){},add(){}}},querySelector:element,hidden:false,getElementById:element,addEventListener(type,fn){const previous=documentHandlers[type];documentHandlers[type]=(event={})=>{previous?.(event);fn(event)}}},window,localStorage:{getItem:k=>stored.get(k)||null,setItem:(k,v)=>stored.set(k,v)},location:{hash:key?'#key='+key:'',pathname:'/',protocol:'http:',host:'192.168.1.42:8765'},history:{replaceState(){if(historyBlocked)throw Error('Unavailable')}},innerHeight:844,ArrayBuffer,WebSocket:Socket,URLSearchParams,Event,CustomEvent,performance:{now:()=>now},setTimeout:window.setTimeout,clearTimeout:id=>{timeouts.delete(id);deadlines.delete(id)},clearInterval(){},requestAnimationFrame(fn){const id=next++;frames.set(id,fn);return id},cancelAnimationFrame:id=>frames.delete(id)};
  runInNewContext(script,context);
  return {element,sockets,timeouts,frames,stored,fillEvents,document:context.document,documentHandlers,windowHandlers,setTime(time){now=time},advance(time){
   for(;;){const due=[...deadlines].filter(([,at])=>at<=time).sort((a,b)=>a[1]-b[1])[0];if(!due)break;
@@ -164,7 +164,7 @@ for (const key of [' ','Enter']) test(`keyboard Super supports holding ${JSON.st
  assert.deepEqual(packets(ws).slice(-2),[[9,227],[10,227]]);
 });
 for (const target of ['keyboard-close','settings-open','disconnect']) test(`${target} releases held Super and clears pending shortcuts`,()=>{
- const s=start(),ws=ready(s);holdSuper(s);s.element('mod-alt').onclick();s.element(target).onclick();
+ const s=start(),ws=ready(s);holdSuper(s);s.element('mod-alt').onclick();s.element(target).onclick({detail:0});
  assert.deepEqual(packets(ws).at(-1),[7]);
  assert.equal(s.element('key-super').attrs['aria-pressed'],'false');assert.equal(s.element('mod-alt').attrs['aria-pressed'],'false');
 });
@@ -304,7 +304,7 @@ for(const stop of ['touchcancel','settings','keyboard','disconnect','socket','pa
  const s=start(),ws=ready(s);scrollFlick(s);s.frameAt(81);
  if(stop==='touchcancel')s.element('pad').handlers.touchcancel();
  else if(stop==='settings')s.element('settings-open').onclick();
- else if(stop==='keyboard')s.element('keyboard-toggle').onclick();
+ else if(stop==='keyboard')s.element('keyboard-toggle').onclick({detail:0});
  else if(stop==='disconnect')s.element('disconnect').onclick();
  else if(stop==='socket'){ws.readyState=3;ws.onclose();}
  else if(stop==='hidden'){s.document.hidden=true;s.documentHandlers.visibilitychange();}
@@ -358,7 +358,7 @@ test('keyboard Super alone never starts the pad fill, including after a pad hold
  assert.equal(s.element('key-super').attrs['aria-pressed'],'true');
 });
 for (const target of ['keyboard-toggle','settings-open','disconnect']) test(`${target} clears the pad fill`,()=>{
- const s=start();ready(s);holdSuper(s,'mod-super');s.element(target).onclick();
+ const s=start();ready(s);holdSuper(s,'mod-super');s.element(target).onclick({detail:0});
  assert.equal(s.fillEvents.at(-1).active,false);
 });
 test('disconnect clears the pad fill without replaying it after reconnect',()=>{
@@ -456,4 +456,24 @@ for(const mode of ['move','release','multitouch','cancel','blur']) test(`right c
  if(mode==='blur')s.windowHandlers.blur();
  rightZoneTouch(s,'touchend',[[mode==='release'?320:350,600]]);
  assert(!packets(ws).some(p=>p[0]===4));
+});
+
+
+test('negotiated flow bounds delayed touch input and delivers final drag motion before release',()=>{
+ const s=start({flow:true}),ws=ready(s);
+ touch(s,'touchstart',[[100,100]]);s.advance(400);
+ for(let i=1;i<=40;i++){s.advance(400+i*4);touch(s,'touchmove',[[100+i,100]]);}
+ touch(s,'touchend',[]);
+ const p=packets(ws);assert(p.every(b=>b[0]===17));assert(p.length<=8);
+ const inner=p.map(b=>b.slice(3));assert.equal(inner[0][0],5);assert.equal(inner.at(-1)[0],6);
+ const total=inner.filter(b=>b[0]===1).reduce((n,b)=>n+new DataView(Uint8Array.from(b).buffer).getFloat32(1,true),0);
+ assert(Math.abs(total-56)<.001);
+ for(const bytes of ws.sent.slice(1))ws.onmessage({data:Uint8Array.from(new Uint8Array(bytes).slice(0,3)).buffer});
+ assert.equal(s.timeouts.size,0);
+});
+test('flow timeout reconnects even when close never fires and does not replay input',()=>{
+ const s=start({flow:true}),ws=ready(s);touch(s,'touchstart',[[100,100]]);touch(s,'touchmove',[[120,100]]);
+ s.advance(2000);assert.equal(ws.readyState,3);assert.equal(s.element('status').textContent,'Reconnecting');
+ s.advance(3000);const next=s.sockets.at(-1);assert.notEqual(next,ws);next.readyState=1;next.onopen();next.onmessage({data:'ready:linux'});
+ touch(s,'touchend',[],[[200,100]]);assert.deepEqual(packets(next),[]);
 });

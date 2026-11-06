@@ -10,8 +10,9 @@ export async function browserPage(read) {
  const text=t.replaceAll('export function','function');
  // Older revisions used by the comparison profiler have no momentum module.
  const scroll=a.includes("from './scroll.js'")?(await read('scroll.js')).replace('export class ScrollMomentum','class ScrollMomentum'):'';
- const app=a.replace("import { Gestures } from './gestures.js';",'').replace("import { ScrollMomentum } from './scroll.js';",'').replace("import { textEdit, normalizeText } from './text.js';",'');
- const script=`(function () {\n${gestures}\n${text}\n${scroll}\n${app}\n})();`;
+ const flow=a.includes("from './flow.js'")?(await read('flow.js')).replace('export class InputFlow','class InputFlow'):'';
+ const app=a.replace("import { Gestures } from './gestures.js';",'').replace("import { ScrollMomentum } from './scroll.js';",'').replace("import { InputFlow } from './flow.js';",'').replace("import { textEdit, normalizeText } from './text.js';",'');
+ const script=`(function () {\n${gestures}\n${text}\n${scroll}\n${flow}\n${app}\n})();`;
  const html=source.replace('<link rel="stylesheet" href="/style.css">',()=>`<style>${css}</style>`)
   .replace('<script src="/theme.js"></script>',()=>`<script>${theme}</script>`)
   .replace('<script src="/super-fill.js"></script>','')

@@ -192,9 +192,17 @@ fn handle(mut c: impl transport::Stream, state: &State) -> io::Result<()> {
                         .all(|b| b.is_ascii_alphanumeric() || b == b'+' || b == b'/')
             })
             .ok_or_else(|| invalid("Invalid WebSocket key"))?;
+        let flow = headers
+            .get("sec-websocket-protocol")
+            .is_some_and(|v| v.split(',').any(|p| p.trim() == "ghostpad.flow.v1"));
+        let protocol = if flow {
+            "Sec-WebSocket-Protocol: ghostpad.flow.v1\r\n"
+        } else {
+            ""
+        };
         write!(
             c,
-            "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {}\r\n\r\n",
+            "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {}\r\n{protocol}\r\n",
             crypto::accept(key)
         )?;
         c.begin_read();
@@ -222,6 +230,7 @@ fn handle(mut c: impl transport::Stream, state: &State) -> io::Result<()> {
         let result = (|| {
             let mut window = Instant::now();
             let mut count = 0;
+            let mut sequence = 0u16;
             loop {
                 c.begin_read();
                 let (op, data) = wire::read_frame(&mut c)?;
@@ -241,11 +250,28 @@ fn handle(mut c: impl transport::Stream, state: &State) -> io::Result<()> {
                     9 => wire::send(&mut c, 10, &data)?,
                     10 => {}
                     2 => {
-                        let command = input::decode(&data)?;
+                        let payload = if flow {
+                            if data.len() < 4 || data[0] != 17 {
+                                return Err(invalid("Expected acknowledged input"));
+                            }
+                            let next = u16::from_le_bytes([data[1], data[2]]);
+                            if next != sequence.wrapping_add(1) {
+                                return Err(invalid("Invalid input sequence"));
+                            }
+                            sequence = next;
+                            &data[3..]
+                        } else {
+                            &data[..]
+                        };
+                        let command = input::decode(payload)?;
                         if command == Command::Ping {
                             wire::send(&mut c, 1, b"pong")?;
                         } else {
                             pointer.handle(command)?;
+                        }
+                        // Confirm only after validation and native input delivery.
+                        if flow {
+                            wire::send(&mut c, 2, &data[..3])?;
                         }
                     }
                     _ => return Err(invalid("Expected binary input")),
@@ -261,6 +287,7 @@ fn handle(mut c: impl transport::Stream, state: &State) -> io::Result<()> {
             "/style.css" => ("text/css", include_bytes!("../web/style.css")),
             "/app.js" => ("text/javascript", include_bytes!("../web/app.js")),
             "/gestures.js" => ("text/javascript", include_bytes!("../web/gestures.js")),
+            "/flow.js" => ("text/javascript", include_bytes!("../web/flow.js")),
             "/scroll.js" => ("text/javascript", include_bytes!("../web/scroll.js")),
             "/text.js" => ("text/javascript", include_bytes!("../web/text.js")),
             "/icon.svg" => ("image/svg+xml", include_bytes!("../web/icon.svg")),
@@ -574,6 +601,77 @@ mod server_tests {
             req.extend(frame(2, &[8]));
         }
         assert!(run(req, &s).0.unwrap_err().to_string().contains("rate"));
+    }
+    fn flow_request(s: &State) -> Vec<u8> {
+        let mut req = String::from_utf8(request("/ws"))
+            .unwrap()
+            .replace(
+                "\r\n\r\n",
+                "\r\nSec-WebSocket-Protocol: other, ghostpad.flow.v1\r\n\r\n",
+            )
+            .into_bytes();
+        req.extend(frame(1, s.token.as_bytes()));
+        req
+    }
+    fn acknowledged(sequence: u16, payload: &[u8]) -> Vec<u8> {
+        let mut bytes = vec![17];
+        bytes.extend(sequence.to_le_bytes());
+        bytes.extend(payload);
+        frame(2, &bytes)
+    }
+    #[test]
+    fn negotiated_input_is_acknowledged_after_processing() {
+        let s = state();
+        let mut req = flow_request(&s);
+        req.extend(acknowledged(1, &[9, 227]));
+        req.extend(acknowledged(2, &[12]));
+        req.extend(acknowledged(3, &[7]));
+        req.extend(acknowledged(4, &[14, b'x']));
+        req.extend(acknowledged(5, &[8]));
+        req.extend(frame(8, &[]));
+        let (r, out) = run(req, &s);
+        assert!(r.is_ok());
+        assert!(contains(
+            &out,
+            "Sec-WebSocket-Protocol: ghostpad.flow.v1\r\n"
+        ));
+        for sequence in 1..=5 {
+            assert!(out.windows(5).any(|w| w == [0x82, 3, 17, sequence, 0]));
+        }
+        assert!(contains(&out, "pong"));
+        assert!(!s.pointer.lock().unwrap().is_down());
+    }
+    #[test]
+    fn invalid_or_replayed_flow_input_releases_without_acknowledgement() {
+        for ending in [
+            acknowledged(1, &[3]),  // duplicate
+            acknowledged(3, &[3]),  // skipped
+            acknowledged(2, &[99]), // invalid command
+            frame(2, &[17, 2, 0]),  // missing command
+            frame(2, &[3]),         // unwrapped command
+        ] {
+            let s = state();
+            let mut req = flow_request(&s);
+            req.extend(acknowledged(1, &[5]));
+            req.extend(ending);
+            let (r, out) = run(req, &s);
+            assert!(r.is_err());
+            assert_eq!(out.windows(3).filter(|w| *w == [0x82, 3, 17]).count(), 1);
+            assert!(!s.pointer.lock().unwrap().is_down());
+        }
+    }
+    #[test]
+    fn flow_requires_negotiation_and_still_requires_authentication() {
+        let s = state();
+        let mut req = request("/ws");
+        req.extend(frame(1, s.token.as_bytes()));
+        req.extend(acknowledged(1, &[3]));
+        assert!(run(req, &s).0.is_err());
+        let mut bad = state();
+        bad.token = "b".repeat(64);
+        let (_, out) = run(flow_request(&s), &bad);
+        assert!(contains(&out, "unauthorized"));
+        assert!(!contains(&out, "ready:"));
     }
     #[test]
     fn hostile_unicode_key_does_not_panic() {

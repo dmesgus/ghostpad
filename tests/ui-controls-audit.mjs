@@ -1,6 +1,7 @@
 // Read-only UI audit against a mocked receiver; no changes to application behavior.
 import { chromium } from 'playwright-core';
 import { readFile, mkdir, writeFile } from 'node:fs/promises';
+import { recordInput } from './support/receiver.mjs';
 import { browserPage } from './support/browser-page.mjs';
 const root = new URL('../', import.meta.url);
 const out = new URL('artifacts/ui-controls-audit/', root);
@@ -19,7 +20,7 @@ try {
   return route.fulfill({contentType:'text/html',body:html,headers:{'Content-Security-Policy':policy}});
  });
  await page.routeWebSocket('**/ws', ws=>ws.onMessage(data=>{
-  if(typeof data==='string')ws.send('ready:preview');else {packets.push([...data]);if(data[0]===8)ws.send('pong');}
+  if(typeof data==='string')ws.send('ready:preview');else {recordInput(ws,data,packets);}
  }));
  await page.addInitScript(()=>{
   window.auditEvents=[];

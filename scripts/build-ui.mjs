@@ -12,6 +12,8 @@ for (const name of await readdir('web/src')) {
   if (!name.endsWith('.ts')) continue;
   const path = `web/${name.slice(0, -3)}.js`;
   const code = await readFile(path, 'utf8');
-  if (!code.includes('`') && !/\\\r?\n/.test(code))
+  const templates = code.match(/`(?:\\[\s\S]|[^`\\])*`/g) || [];
+  const singleLineTemplates = templates.every(value => !/[\r\n]/.test(value));
+  if (singleLineTemplates && !/\\\r?\n/.test(code))
     await writeFile(path, code.replace(/^[ \t]+/gm, ''));
 }

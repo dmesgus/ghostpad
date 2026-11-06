@@ -1,5 +1,6 @@
 import { Gestures, type Action } from './gestures.js';
 import { ScrollMomentum } from './scroll.js';
+import { InputFlow } from './flow.js';
 import { textEdit, normalizeText } from './text.js';
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const pad = $('pad'), dialog = $<HTMLDialogElement>('settings'), sensitivity = $<HTMLInputElement>('sensitivity'), natural = $<HTMLInputElement>('natural');
@@ -24,7 +25,8 @@ let pointerSpeed = Number(sensitivity.value);
 function preferences() { pointerSpeed = Number(sensitivity.value); $('sensitivity-value').textContent = `${Number(sensitivity.value).toFixed(1)}×`; save('sensitivity', sensitivity.value); save('natural', String(natural.checked)); for (const button of $('tracking-presets').querySelectorAll<HTMLButtonElement>('button')) button.setAttribute('aria-pressed', String(Number(button.dataset.speed) === Number(sensitivity.value))); }
 preferences(); sensitivity.oninput = preferences; natural.onchange = preferences;
 let socket: WebSocket | null = null, ready = false, paused = false, retry = 500, reconnect = 0, heartbeat = 0, lastPong = 0, connectionDeadline = 0;
-let lastMotion = -Infinity, lastPing = 0;
+let lastMotion = -Infinity, lastPing: number | null = null;
+let flow: InputFlow | null = null;
 let padTouches = 0, ignorePad = false;
 let scrollTouch: { id: number; x: number; y: number; moved: boolean } | null = null;
 let rightTouch: Touch | null = null;
@@ -50,13 +52,12 @@ let hold = 0, frame = 0, pending: { type: 'move' | 'scroll'; dx: number; dy: num
 function status(label: string, detail: string, online = false) { $('status').textContent = label; $('detail').textContent = detail; $('dot').classList.toggle('online', online); document.body.classList.toggle('connected', online); if (!online) $('hint').textContent = detail; }
 function transmit(bytes: ArrayBuffer) {
   if (!ready || socket?.readyState !== WebSocket.OPEN) return;
+  if (flow) { flow.send(bytes); return; }
   if (socket.bufferedAmount > 256) { socket.close(); return; }
   socket.send(bytes);
 }
 function send(code: number, dx?: number, dy?: number) {
   if (!ready || socket?.readyState !== WebSocket.OPEN) return;
-  // Never queue stale gestures behind an overloaded connection; release via disconnect.
-  if (socket.bufferedAmount > 256) { socket.close(); return; }
   const bytes = new ArrayBuffer(dx === undefined ? 1 : 9), view = new DataView(bytes);
   view.setUint8(0, code);
   if (dx !== undefined) { view.setFloat32(1, Math.max(-2048, Math.min(2048, dx)), true); view.setFloat32(5, Math.max(-2048, Math.min(2048, dy!)), true); }
@@ -100,6 +101,7 @@ const gestures = new Gestures(action, () => modifiers.has('super'));
 const momentum = new ScrollMomentum();
 let momentumFrame = 0;
 function stopMomentum() {
+  flow?.discardMotion(2);
   // Discard any unsent coast delta before a new touch or shortcut takes control.
   if (momentumFrame && pending?.type === 'scroll') { clearTimeout(frame); frame = 0; pending = null; }
   cancelAnimationFrame(momentumFrame); momentumFrame = 0; momentum.reset();
@@ -129,7 +131,7 @@ function moveStrip(touch: Touch) {
     scrollTouch = { id: scrollTouch.id, x: touch.clientX, y: touch.clientY, moved: true };
   }
 }
-function cancel() { rightTouch = null; stopMomentum(); stopText(); resetScroll(); superPointers.clear(); padSuperPointers.clear(); superKeys.clear(); padTouches = 0; ignorePad = false; clearTimeout(hold); clearTimeout(frame); frame = 0; pending = null; lastMotion = -Infinity; gestures.cancel(); releaseHeldKeys(); send(7); modifiers.clear(); shortcutModifiers.clear(); updateModifiers(); pad.classList.remove('active'); setDragging(false); }
+function cancel() { flow?.discardQueued(); rightTouch = null; stopMomentum(); stopText(); resetScroll(); superPointers.clear(); padSuperPointers.clear(); superKeys.clear(); padTouches = 0; ignorePad = false; clearTimeout(hold); clearTimeout(frame); frame = 0; pending = null; lastMotion = -Infinity; gestures.cancel(); releaseHeldKeys(); send(7); modifiers.clear(); shortcutModifiers.clear(); updateModifiers(); pad.classList.remove('active'); setDragging(false); }
 for (const type of ['touchstart', 'touchmove', 'touchend'] as const) {
   pad.addEventListener(type, (event: TouchEvent) => {
     // Touches retain their original target when sliding across zone boundaries.
@@ -189,7 +191,10 @@ function connect() {
   if (!key) { status('Pair your phone', 'Scan the QR code in the Ghostpad receiver terminal.'); $('hint').textContent = 'Scan your computer’s QR code to connect.'; return; }
   status('Connecting', 'Looking for your computer on this Wi-Fi network.');
   let ws: WebSocket;
-  try { ws = new WebSocket(`${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws`); }
+  try {
+    ws = new WebSocket(`${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws`, 'ghostpad.flow.v1');
+    ws.binaryType = 'arraybuffer';
+  }
   catch { status('Connection blocked', 'Safari could not open the local connection. Open the exact address from the receiver.'); $('reload').hidden = false; return; }
   socket = ws;
   connectionDeadline = window.setTimeout(() => {
@@ -202,14 +207,27 @@ function connect() {
   ws.onopen = () => { if (socket === ws) ws.send(key); else ws.close(); };
   ws.onmessage = e => {
     if (socket !== ws) return;
-    if (e.data === 'pong') { lastPong = Date.now(); $('latency').textContent = `Wi-Fi round-trip: ${Math.round(performance.now() - lastPing)} ms`; return; }
+    if (e.data instanceof ArrayBuffer) { flow?.acknowledge(e.data); return; }
+    if (e.data === 'pong') {
+      lastPong = Date.now();
+      if (lastPing !== null) {
+        const ms = Math.round(performance.now() - lastPing);
+        $('latency').textContent = `Wi-Fi round-trip: ${ms} ms${flow && flow.interval > 8 ? ' · adapting to a slower link' : ''}`;
+        lastPing = null;
+      }
+      return;
+    }
     if (typeof e.data === 'string' && e.data.startsWith('ready:')) {
       clearTimeout(connectionDeadline); $('reload').hidden = true;
-      ready = true; retry = 500; lastPong = Date.now();
+      if (ready) return;
+      ready = true; retry = 500; lastPong = Date.now(); lastPing = null;
+      if (ws.protocol === 'ghostpad.flow.v1') flow = new InputFlow(ws, {
+        now: () => performance.now(), later: (fn, ms) => window.setTimeout(fn, ms), clear: id => clearTimeout(id),
+      }, () => { ws.close(); finish(); });
       const preview = e.data === 'ready:preview';
       status(preview ? 'Preview' : 'Connected', preview ? 'Preview mode. Gestures connect, but do not move the computer’s cursor.' : `Connected locally · ${location.protocol === 'https:' ? 'encrypted' : 'unencrypted, trusted Wi-Fi only'}`, true);
       $('hint').textContent = preview ? 'Connected in preview. Cursor control is off.' : 'Your desktop, at your fingertips.';
-      heartbeat = window.setInterval(() => { if (Date.now() - lastPong > 6000) ws.close(); else { lastPing = performance.now(); send(8); } }, 1500);
+      heartbeat = window.setInterval(() => { if (Date.now() - lastPong > 6000) ws.close(); else if (lastPing === null) { lastPing = performance.now(); send(8); } }, 1500);
     } else if (e.data === 'unauthorized') {
       paused = true; key = ''; save('key', ''); status('Pair again', 'Pairing was revoked. Scan the receiver’s new QR code.'); ws.close();
     } else if (e.data === 'busy') { status('Computer busy', 'Another phone is connected. Disconnect it to use this phone.'); ws.close(); }
@@ -217,7 +235,7 @@ function connect() {
   ws.onerror = () => ws.close();
   function finish() {
     if (socket !== ws) return;
-    clearTimeout(connectionDeadline); ready = false; socket = null; clearInterval(heartbeat); cancel();
+    clearTimeout(connectionDeadline); flow?.stop(); flow = null; ready = false; socket = null; clearInterval(heartbeat); cancel();
     if (!paused && !document.hidden) {
       if ($('status').textContent !== 'Computer busy') status('Reconnecting', 'Keep both devices on the same Wi-Fi. Reconnecting automatically.');
       reconnect = window.setTimeout(connect, retry + Math.random() * 200); retry = Math.min(8000, retry * 1.7);
@@ -225,19 +243,123 @@ function connect() {
   }
   ws.onclose = finish;
 }
-function suspend() { cancel(); clearTimeout(reconnect); clearInterval(heartbeat); socket?.close(); }
+function suspend() { cancel(); flow?.stop(); flow = null; clearTimeout(reconnect); clearInterval(heartbeat); socket?.close(); }
 document.addEventListener('visibilitychange', () => { if (document.hidden) suspend(); else { if (socket?.readyState === WebSocket.CLOSED) socket = null; connect(); } });
 window.addEventListener('pagehide', suspend); window.addEventListener('pageshow', connect); window.addEventListener('online', connect);
-function closeSettings() { dialog.removeAttribute('open'); document.body.classList.toggle('settings-open', false); }
-function closeKeyboard() { $('native-input').blur(); $('keyboard-panel').hidden = true; $('keyboard-toggle').setAttribute('aria-expanded', 'false'); document.body.classList.toggle('keyboard-open', false); cancel(); }
-function openSettings() { closeKeyboard(); cancel(); dialog.setAttribute('open', ''); document.body.classList.toggle('settings-open', true); }
-$('settings-open').onclick = openSettings;
-$('settings-handle').onclick = () => { if (dialog.open) closeSettings(); else openSettings(); };
-$('settings-close').onclick = closeSettings;
-$('keyboard-close').onclick = closeKeyboard;
-let handleStart = 0;
-$('settings-handle').addEventListener('pointerdown', e => { handleStart = e.clientY; });
-$('settings-handle').addEventListener('pointerup', e => { if (handleStart - e.clientY > 20) openSettings(); });
+let settingsOpener: HTMLElement = $('settings-open');
+let keyboardViewportHeight = 0;
+let preferredNative = read('keyboardMode') !== 'grid';
+let closeTimer = 0, closeDeadline = 0, closeStartHeight = 0, closingSpace = 0;
+function finishKeyboardClose() {
+  clearTimeout(closeTimer); closeDeadline = 0;
+  document.body.classList.remove('keyboard-closing');
+  document.querySelector('main')!.style.removeProperty('--closing-space');
+}
+function settleKeyboardClose() {
+  if (!closeDeadline) return;
+  clearTimeout(closeTimer);
+  const height = window.visualViewport?.height || innerHeight;
+  document.querySelector('main')!.style.setProperty('--closing-space', `${Math.max(0, closingSpace - (height - closeStartHeight))}px`);
+  closeTimer = window.setTimeout(() => {
+    closeDeadline = 0;
+    document.querySelector('main')!.style.setProperty('--closing-space', '0px');
+    closeTimer = window.setTimeout(finishKeyboardClose, 180);
+  }, Math.max(0, Math.min(160, closeDeadline - performance.now())));
+}
+function closeSettings(restore = true) {
+  if (!dialog.open) return;
+  dialog.removeAttribute('open'); document.body.classList.remove('settings-open');
+  if (restore) settingsOpener.focus({ preventScroll: true });
+}
+function closeKeyboard(restore = true) {
+  if ($('keyboard-panel').hidden) { cancel(); return; }
+  const panelHeight = $('keyboard-panel').getBoundingClientRect().height;
+  const recovering = document.activeElement === nativeInput && (window.visualViewport?.height || innerHeight) < Math.max(innerHeight, keyboardViewportHeight) - 80;
+  $('keyboard-panel').hidden = true;
+  $('keyboard-toggle').setAttribute('aria-expanded', 'false');
+  document.body.classList.remove('keyboard-open');
+  if (recovering) {
+    // Reserve the removed panel's space while the OS keyboard restores the viewport.
+    const dockHeight = document.querySelector('.dock')!.getBoundingClientRect().height + $('settings-handle').getBoundingClientRect().height;
+    const bottomInset = parseFloat(getComputedStyle(document.querySelector('main')!).paddingBottom) || 0;
+    closingSpace = Math.max(0, panelHeight - dockHeight - bottomInset);
+    closeStartHeight = window.visualViewport?.height || innerHeight;
+    document.querySelector('main')!.style.setProperty('--closing-space', `${closingSpace}px`);
+    document.body.classList.add('keyboard-closing');
+    closeDeadline = performance.now() + 800; settleKeyboardClose();
+  }
+  nativeInput.blur(); cancel();
+  $('typing-help').textContent = typingHelp;
+  if (restore) $('keyboard-toggle').focus({ preventScroll: true });
+}
+function openSettings(opener: HTMLElement = $('settings-open')) {
+  settingsOpener = opener; closeKeyboard(false); finishKeyboardClose(); cancel();
+  dialog.setAttribute('open', ''); document.body.classList.add('settings-open');
+  $('settings-close').focus({ preventScroll: true });
+}
+$('settings-open').onclick = () => openSettings();
+$('settings-handle').onclick = () => { if (dialog.open) closeSettings(); else openSettings($('settings-handle')); };
+$('settings-close').onclick = () => closeSettings();
+$('keyboard-close').onclick = () => closeKeyboard();
+// Capture the original control and preserve typing focus until activation. A viewport
+// resize between press and release must not retarget the tap to another element.
+let controlClick: { x: number; y: number } | null = null;
+for (const id of ['keyboard-close', 'native-mode', 'grid-mode', 'settings-close', 'settings-handle']) {
+  const button = $(id);
+  let press: { id: number; x: number; y: number } | null = null;
+  button.addEventListener('pointerdown', event => {
+    if (!event.isPrimary || event.button !== 0) return;
+    event.preventDefault();
+    press = { id: event.pointerId, x: event.clientX, y: event.clientY };
+    button.setPointerCapture(event.pointerId);
+  });
+  button.addEventListener('pointerup', event => {
+    if (!press || press.id !== event.pointerId) return;
+    const { x, y } = press; press = null;
+    controlClick = { x: event.clientX, y: event.clientY };
+    if (id === 'settings-handle' && y - event.clientY > 20) openSettings(button);
+    else if (Math.hypot(x - event.clientX, y - event.clientY) < 12) button.click();
+  });
+  for (const type of ['pointercancel', 'lostpointercapture']) button.addEventListener(type, () => { press = null; });
+  button.addEventListener('click', event => { if (event.detail > 0) { event.preventDefault(); event.stopImmediatePropagation(); } }, true);
+}
+document.addEventListener('keydown', event => {
+  if (event.key !== 'Escape' || event.isComposing) return;
+  if (dialog.open) { event.preventDefault(); closeSettings(); }
+  else if (!$('keyboard-panel').hidden) { event.preventDefault(); closeKeyboard(); }
+});
+// A rapid repeat tap where the opener used to be must not become remote input.
+let openingTap: { x: number; y: number; until: number } | null = null;
+const blockedPointers = new Set<number>(), blockedTouches = new Set<number>();
+function nearOpening(x: number, y: number) {
+  return openingTap && performance.now() < openingTap.until && Math.hypot(x - openingTap.x, y - openingTap.y) < 32;
+}
+for (const type of ['pointerdown', 'pointermove', 'pointerup', 'pointercancel', 'touchstart', 'touchmove', 'touchend', 'touchcancel', 'click']) {
+  document.addEventListener(type, event => {
+    let block = false;
+    if (type === 'pointerdown') controlClick = null;
+    const remoteTarget = (event.target as Element | null)?.closest('#pad, #keyboard, #special-keys, #native-tools');
+    if (type === 'click' && event instanceof MouseEvent && event.detail > 0) {
+      block = !!controlClick && Math.hypot(event.clientX - controlClick.x, event.clientY - controlClick.y) < 20;
+      controlClick = null;
+      block ||= !!remoteTarget && !!nearOpening(event.clientX, event.clientY);
+    } else if (typeof PointerEvent !== 'undefined' && event instanceof PointerEvent) {
+      if (type === 'pointerdown' && remoteTarget && nearOpening(event.clientX, event.clientY)) blockedPointers.add(event.pointerId);
+      block = blockedPointers.has(event.pointerId);
+      if (type === 'pointerup' || type === 'pointercancel') {
+        blockedPointers.delete(event.pointerId);
+        if (block) openingTap = { x: event.clientX, y: event.clientY, until: Math.max(openingTap?.until || 0, performance.now() + 50) };
+      }
+    } else if (typeof TouchEvent !== 'undefined' && event instanceof TouchEvent) {
+      for (const touch of Array.from(event.changedTouches)) {
+        if (type === 'touchstart' && remoteTarget && nearOpening(touch.clientX, touch.clientY)) blockedTouches.add(touch.identifier);
+        if (blockedTouches.has(touch.identifier)) block = true;
+        if (type === 'touchend' || type === 'touchcancel') blockedTouches.delete(touch.identifier);
+      }
+    } else if (typeof MouseEvent !== 'undefined' && event instanceof MouseEvent && event.detail > 0) block = !!remoteTarget && !!nearOpening(event.clientX, event.clientY);
+    if (block) { event.preventDefault(); event.stopImmediatePropagation(); }
+  }, { capture: true, passive: false });
+}
 $('disconnect').onclick = () => { paused = !paused; $('disconnect').textContent = paused ? 'Reconnect' : 'Disconnect'; if (paused) { suspend(); status('Disconnected', 'Tap Reconnect when you’re ready.'); } else connect(); };
 $('forget').onclick = () => { paused = true; suspend(); key = ''; save('key', ''); status('Pair your phone', 'Pairing forgotten on this phone. Scan a QR code to connect again.'); $('hint').textContent = 'Scan your computer’s QR code to connect.'; closeSettings(); };
 
@@ -317,12 +439,19 @@ for (const type of ['touchmove', 'touchend'] as const) rightClick.addEventListen
   if (touch && rightTouch && Math.hypot(touch.clientX - rightTouch.clientX, touch.clientY - rightTouch.clientY) > 9) rightTouch = null;
   if (type === 'touchend') { if (touch && rightTouch) rightClick.click(); rightTouch = null; }
 }, { passive: false });
-$('keyboard-toggle').onclick = () => {
+$('keyboard-toggle').onclick = event => {
+  if (event.detail > 0) openingTap = { x: event.clientX, y: event.clientY, until: performance.now() + 450 };
+  finishKeyboardClose();
   if (!$('keyboard-panel').hidden) { closeKeyboard(); return; }
-  cancel(); closeSettings(); $('keyboard-panel').hidden = false;
+  keyboardViewportHeight = window.visualViewport?.height || window.innerHeight;
+  cancel(); closeSettings(false); $('keyboard-panel').hidden = false;
   $('keyboard-toggle').setAttribute('aria-expanded', 'true'); document.body.classList.toggle('keyboard-open', true);
-  keyboardMode(true);
+  $('typing-help').textContent = typingHelp;
+  $('keyboard-panel').querySelector('.sheet-scroll')!.scrollTop = 0;
+  keyboardMode(preferredNative);
+  if (!preferredNative) $('grid-mode').focus({ preventScroll: true });
 };
+const typingHelp = $('typing-help').textContent;
 const nativeInput = $<HTMLTextAreaElement>('native-input');
 function resetTextContext() { previousText = ''; nativeInput.value = ''; }
 function stopText() { composing = false; clearTimeout(textTimer); textTimer = 0; textQueue = []; previousText = ''; $<HTMLTextAreaElement>('native-input').value = ''; }
@@ -370,6 +499,7 @@ nativeInput.addEventListener('beforeinput', (event: InputEvent) => {
   }
 });
 function keyboardMode(native: boolean) {
+  preferredNative = native; save('keyboardMode', native ? 'native' : 'grid');
   if ($('native-panel').hidden !== !native) releaseHeldKeys();
   $('native-panel').hidden = !native; $('keyboard').hidden = native;
   $('native-tools').hidden = !native; $('special-keys').hidden = native;
@@ -491,11 +621,12 @@ function fitViewport() {
   const viewport = window.visualViewport;
   const height = viewport?.height || window.innerHeight;
   if (height) {
+    if (!$('keyboard-panel').hidden) keyboardViewportHeight = Math.max(keyboardViewportHeight, height);
     const main = document.querySelector('main')!;
     main.style.height = `${height}px`;
     main.style.top = `${viewport?.offsetTop || 0}px`;
-    document.body.classList.toggle('compact-keyboard', height < 560);
-    document.body.classList.toggle('tight-keyboard', height < 380);
+    main.style.setProperty('--view-height', `${height}px`);
+    settleKeyboardClose();
   }
   document.body.classList.toggle('native-focused', document.activeElement === nativeInput);
 }

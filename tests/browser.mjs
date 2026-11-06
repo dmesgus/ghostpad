@@ -3,6 +3,7 @@ const { chromium } = await import(process.env.PLAYWRIGHT_MODULE || 'playwright-c
 import { readFile, mkdir } from 'node:fs/promises';
 import assert from 'node:assert/strict';
 import { checkAppearance, checkAppearanceFallbacks } from './support/appearance.mjs';
+import { recordInput } from './support/receiver.mjs';
 import { browserPage } from './support/browser-page.mjs';
 const root = new URL('../', import.meta.url);
 const browser = await chromium.launch({executablePath: process.env.CHROMIUM_PATH || '/usr/bin/chromium', args:['--no-sandbox']});
@@ -24,7 +25,7 @@ try {
  await page.routeWebSocket('**/ws', ws=>{
   ws.onMessage(data=>{
    if (typeof data==='string') {assert.equal(data,'a'.repeat(64));ws.send('ready:preview');}
-   else {packets.push([...data]);if(data[0]===8)ws.send('pong');}
+   else {recordInput(ws,data,packets);}
   });
  });
  await page.addInitScript(()=>{
@@ -486,7 +487,8 @@ try {
  await resizeViewport({width:390,height:844});
  await page.locator('#keyboard-close').click();
  await page.locator('#keyboard-toggle').tap();
- assert.equal(await page.locator('#native-input').evaluate(el=>document.activeElement===el),true,'Reopening must return directly to phone typing');
+ assert.equal(await page.locator('#grid-mode').getAttribute('aria-pressed'),'true','Reopening must retain the selected grid mode');
+ await page.locator('#native-mode').tap();
  // Older browsers fall back to the window size when VisualViewport is missing.
  await page.evaluate(()=>{
   window.viewportDescriptor=Object.getOwnPropertyDescriptor(window,'visualViewport');

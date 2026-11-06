@@ -1,0 +1,15 @@
+{
+  "results": [
+    "Safe-area controls preserve focus until release",
+    "Viewport thresholds are continuous in both modes",
+    "Touch release closes original control after a viewport resize",
+    "Closing reserves panel space and keeps the dock in short viewports",
+    "Closing with safe areas and a resized layout viewport",
+    "Touch swipes open settings once and canceled control presses do nothing",
+    "Double tapping the opener sends no remote key or pointer input",
+    "Handle swipes capture outside releases and suppress duplicate clicks",
+    "Escape closes panels and restores their opener focus",
+    "Reopening clears errors and retains mode, including reload"
+  ],
+  "errors": []
+}
