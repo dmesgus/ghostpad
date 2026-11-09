@@ -5,6 +5,7 @@ import { InputFlow } from './flow.js';
 import { textEdit, normalizeText } from './text.js';
 const $ = (id) => document.getElementById(id);
 const pad = $('pad'), dialog = $('settings'), sensitivity = $('sensitivity'), natural = $('natural');
+const main = document.querySelector('main'), keyboardPanel = $('keyboard-panel'), bodyClasses = document.body.classList;
 const scrollZone = $('scroll-zone');
 const read = (key) => { try {
 return localStorage.getItem(`ghostpad.${key}`);
@@ -47,6 +48,7 @@ preferences();
 sensitivity.oninput = preferences;
 natural.onchange = preferences;
 let socket = null, ready = false, paused = false, retry = 500, reconnect = 0, heartbeat = 0, lastPong = 0, connectionDeadline = 0;
+let closeConnection = null;
 let lastMotion = -Infinity, lastPing = null;
 let flow = null;
 let padTouches = 0, ignorePad = false;
@@ -71,7 +73,7 @@ const shortcutModifiers = new Map();
 const heldKeys = new Map();
 const heldUsages = new Map();
 let hold = 0, frame = 0, pending = null;
-function status(label, detail, online = false) { $('status').textContent = label; $('detail').textContent = detail; $('dot').classList.toggle('online', online); document.body.classList.toggle('connected', online); if (!online)
+function status(label, detail, online = false) { $('status').textContent = label; $('detail').textContent = detail; $('dot').classList.toggle('online', online); bodyClasses.toggle('connected', online); if (!online)
 $('hint').textContent = detail; }
 function transmit(bytes) {
 if (!ready || (socket === null || socket === void 0 ? void 0 : socket.readyState) !== WebSocket.OPEN)
@@ -81,14 +83,27 @@ flow.send(bytes);
 return;
 }
 if (socket.bufferedAmount > 256) {
-socket.close();
+closeConnection === null || closeConnection === void 0 ? void 0 : closeConnection();
 return;
 }
+try {
 socket.send(bytes);
+}
+catch (_a) {
+closeConnection === null || closeConnection === void 0 ? void 0 : closeConnection();
+}
 }
 function send(code, dx, dy) {
 if (!ready || (socket === null || socket === void 0 ? void 0 : socket.readyState) !== WebSocket.OPEN)
 return;
+if (dx !== undefined && (Math.abs(dx) > 2048 || Math.abs(dy) > 2048)) {
+const parts = Math.ceil(Math.max(Math.abs(dx), Math.abs(dy)) / 2048);
+if (!Number.isFinite(parts))
+return;
+for (let i = 0; i < parts; i++)
+send(code, dx / parts, dy / parts);
+return;
+}
 const bytes = new ArrayBuffer(dx === undefined ? 1 : 9), view = new DataView(bytes);
 view.setUint8(0, code);
 if (dx !== undefined) {
@@ -276,7 +291,11 @@ scrollSidePreference();
 });
 function connect() {
 clearTimeout(reconnect);
-if (paused || document.hidden || socket)
+if (paused || document.hidden)
+return;
+if (socket && (socket.readyState === WebSocket.CLOSING || socket.readyState === WebSocket.CLOSED))
+closeConnection === null || closeConnection === void 0 ? void 0 : closeConnection(false);
+if (socket)
 return;
 if (!key) {
 status('Pair your phone', 'Scan the QR code in the Ghostpad receiver terminal.');
@@ -295,18 +314,26 @@ $('reload').hidden = false;
 return;
 }
 socket = ws;
+closeConnection = close;
 connectionDeadline = window.setTimeout(() => {
 if (socket !== ws || ready)
 return;
 status('Connection timed out', 'The page loaded, but the computer did not finish connecting. Check that Ghostpad is still running.');
 $('reload').hidden = false;
-ws.close();
-finish();
+close();
 }, 7000);
-ws.onopen = () => { if (socket === ws)
+ws.onopen = () => {
+if (socket !== ws) {
+ws.close();
+return;
+}
+try {
 ws.send(key);
-else
-ws.close(); };
+}
+catch (_a) {
+close();
+}
+};
 ws.onmessage = e => {
 if (socket !== ws)
 return;
@@ -315,7 +342,7 @@ flow === null || flow === void 0 ? void 0 : flow.acknowledge(e.data);
 return;
 }
 if (e.data === 'pong') {
-lastPong = Date.now();
+lastPong = performance.now();
 if (lastPing !== null) {
 const ms = Math.round(performance.now() - lastPing);
 $('latency').textContent = `Wi-Fi round-trip: ${ms} ms${flow && flow.interval > 8 ? ' · adapting to a slower link' : ''}`;
@@ -330,17 +357,17 @@ if (ready)
 return;
 ready = true;
 retry = 500;
-lastPong = Date.now();
+lastPong = performance.now();
 lastPing = null;
 if (ws.protocol === 'ghostpad.flow.v1')
 flow = new InputFlow(ws, {
 now: () => performance.now(), later: (fn, ms) => window.setTimeout(fn, ms), clear: id => clearTimeout(id),
-}, () => { ws.close(); finish(); });
+}, () => close());
 const preview = e.data === 'ready:preview';
 status(preview ? 'Preview' : 'Connected', preview ? 'Preview mode. Gestures connect, but do not move the computer’s cursor.' : `Connected locally · ${location.protocol === 'https:' ? 'encrypted' : 'unencrypted, trusted Wi-Fi only'}`, true);
 $('hint').textContent = preview ? 'Connected in preview. Cursor control is off.' : 'Your desktop, at your fingertips.';
-heartbeat = window.setInterval(() => { if (Date.now() - lastPong > 6000)
-ws.close();
+heartbeat = window.setInterval(() => { if (performance.now() - lastPong > 6000)
+close();
 else if (lastPing === null) {
 lastPing = performance.now();
 send(8);
@@ -351,15 +378,19 @@ paused = true;
 key = '';
 save('key', '');
 status('Pair again', 'Pairing was revoked. Scan the receiver’s new QR code.');
-ws.close();
+close();
 }
 else if (e.data === 'busy') {
 status('Computer busy', 'Another phone is connected. Disconnect it to use this phone.');
-ws.close();
+close();
 }
 };
-ws.onerror = () => ws.close();
-function finish() {
+ws.onerror = () => close();
+function close(shouldRetry = true) {
+ws.close();
+finish(shouldRetry);
+}
+function finish(shouldRetry = true) {
 if (socket !== ws)
 return;
 clearTimeout(connectionDeadline);
@@ -367,82 +398,48 @@ flow === null || flow === void 0 ? void 0 : flow.stop();
 flow = null;
 ready = false;
 socket = null;
+closeConnection = null;
+lastPing = null;
 clearInterval(heartbeat);
 cancel();
-if (!paused && !document.hidden) {
+if (shouldRetry && !paused && !document.hidden) {
 if ($('status').textContent !== 'Computer busy')
 status('Reconnecting', 'Keep both devices on the same Wi-Fi. Reconnecting automatically.');
 reconnect = window.setTimeout(connect, retry + Math.random() * 200);
 retry = Math.min(8000, retry * 1.7);
 }
 }
-ws.onclose = finish;
+ws.onclose = () => finish();
 }
-function suspend() { cancel(); flow === null || flow === void 0 ? void 0 : flow.stop(); flow = null; clearTimeout(reconnect); clearInterval(heartbeat); socket === null || socket === void 0 ? void 0 : socket.close(); }
+function suspend() { cancel(); closeConnection === null || closeConnection === void 0 ? void 0 : closeConnection(false); clearTimeout(reconnect); clearInterval(heartbeat); }
 document.addEventListener('visibilitychange', () => { if (document.hidden)
 suspend();
-else {
-if ((socket === null || socket === void 0 ? void 0 : socket.readyState) === WebSocket.CLOSED)
-socket = null;
-connect();
-} });
+else
+connect(); });
 window.addEventListener('pagehide', suspend);
 window.addEventListener('pageshow', connect);
 window.addEventListener('online', connect);
 let settingsOpener = $('settings-open');
-let keyboardViewportHeight = 0;
 let preferredNative = read('keyboardMode') !== 'grid';
-let closeTimer = 0, closeDeadline = 0, closeStartHeight = 0, closingSpace = 0;
-function finishKeyboardClose() {
-clearTimeout(closeTimer);
-closeDeadline = 0;
-document.body.classList.remove('keyboard-closing');
-document.querySelector('main').style.removeProperty('--closing-space');
-}
-function settleKeyboardClose() {
-var _a;
-if (!closeDeadline)
-return;
-clearTimeout(closeTimer);
-const height = ((_a = window.visualViewport) === null || _a === void 0 ? void 0 : _a.height) || innerHeight;
-document.querySelector('main').style.setProperty('--closing-space', `${Math.max(0, closingSpace - (height - closeStartHeight))}px`);
-closeTimer = window.setTimeout(() => {
-closeDeadline = 0;
-document.querySelector('main').style.setProperty('--closing-space', '0px');
-closeTimer = window.setTimeout(finishKeyboardClose, 180);
-}, Math.max(0, Math.min(160, closeDeadline - performance.now())));
-}
 function closeSettings(restore = true) {
 if (!dialog.open)
 return;
 dialog.removeAttribute('open');
-document.body.classList.remove('settings-open');
+bodyClasses.remove('settings-open');
 if (restore)
 settingsOpener.focus({ preventScroll: true });
 }
 function closeKeyboard(restore = true) {
-var _a, _b;
-if ($('keyboard-panel').hidden) {
+if (keyboardPanel.hidden) {
 cancel();
 return;
 }
-const panelHeight = $('keyboard-panel').getBoundingClientRect().height;
-const recovering = document.activeElement === nativeInput && (((_a = window.visualViewport) === null || _a === void 0 ? void 0 : _a.height) || innerHeight) < Math.max(innerHeight, keyboardViewportHeight) - 80;
-$('keyboard-panel').hidden = true;
-$('keyboard-toggle').setAttribute('aria-expanded', 'false');
-document.body.classList.remove('keyboard-open');
-if (recovering) {
-const dockHeight = document.querySelector('.dock').getBoundingClientRect().height + $('settings-handle').getBoundingClientRect().height;
-const bottomInset = parseFloat(getComputedStyle(document.querySelector('main')).paddingBottom) || 0;
-closingSpace = Math.max(0, panelHeight - dockHeight - bottomInset);
-closeStartHeight = ((_b = window.visualViewport) === null || _b === void 0 ? void 0 : _b.height) || innerHeight;
-document.querySelector('main').style.setProperty('--closing-space', `${closingSpace}px`);
-document.body.classList.add('keyboard-closing');
-closeDeadline = performance.now() + 800;
-settleKeyboardClose();
-}
 nativeInput.blur();
 cancel();
+keyboardPanel.hidden = true;
+$('keyboard-toggle').setAttribute('aria-expanded', 'false');
+bodyClasses.remove('keyboard-open');
+fitViewport();
 $('typing-help').textContent = typingHelp;
 if (restore)
 $('keyboard-toggle').focus({ preventScroll: true });
@@ -450,10 +447,9 @@ $('keyboard-toggle').focus({ preventScroll: true });
 function openSettings(opener = $('settings-open')) {
 settingsOpener = opener;
 closeKeyboard(false);
-finishKeyboardClose();
 cancel();
 dialog.setAttribute('open', '');
-document.body.classList.add('settings-open');
+bodyClasses.add('settings-open');
 $('settings-close').focus({ preventScroll: true });
 }
 $('settings-open').onclick = () => openSettings();
@@ -499,7 +495,7 @@ if (dialog.open) {
 event.preventDefault();
 closeSettings();
 }
-else if (!$('keyboard-panel').hidden) {
+else if (!keyboardPanel.hidden) {
 event.preventDefault();
 closeKeyboard();
 }
@@ -565,7 +561,7 @@ const names = Array.from(shortcutModifiers.keys(), name => name[0].toUpperCase()
 if (modifiers.has('super'))
 names.unshift('Super held');
 $('shortcut-help').textContent = names.length ? `${names.join(' + ')} · tap a key` : 'Hold Super; lift to release. Tap Shift, Ctrl or Alt for one shortcut.';
-document.body.classList.toggle('super-held', modifiers.has('super'));
+bodyClasses.toggle('super-held', modifiers.has('super'));
 updateSuperFill();
 if (ready)
 $('hint').textContent = modifiers.has('super') ? 'Super held · 1 finger moves · 2 fingers resize' : 'Pinch to zoom · hold Super to move or resize windows.';
@@ -660,7 +656,8 @@ releaseSuper();
 });
 button.addEventListener('blur', () => { superKeys.delete(button); releaseSuper(); });
 }
-window.addEventListener('blur', cancel);
+window.addEventListener('blur', () => { cancel(); if (viewportFocused)
+watchViewport(false); });
 const rightClick = $('right-click');
 rightClick.onclick = () => { if (ready) {
 nativeInput.blur();
@@ -689,28 +686,35 @@ rightTouch = null;
 }
 }, { passive: false });
 $('keyboard-toggle').onclick = event => {
-var _a;
 if (event.detail > 0)
 openingTap = { x: event.clientX, y: event.clientY, until: performance.now() + 450 };
-finishKeyboardClose();
-if (!$('keyboard-panel').hidden) {
+if (!keyboardPanel.hidden) {
 closeKeyboard();
 return;
 }
-keyboardViewportHeight = ((_a = window.visualViewport) === null || _a === void 0 ? void 0 : _a.height) || window.innerHeight;
 cancel();
 closeSettings(false);
-$('keyboard-panel').hidden = false;
+keyboardPanel.hidden = false;
 $('keyboard-toggle').setAttribute('aria-expanded', 'true');
-document.body.classList.toggle('keyboard-open', true);
+bodyClasses.toggle('keyboard-open', true);
 $('typing-help').textContent = typingHelp;
-$('keyboard-panel').querySelector('.sheet-scroll').scrollTop = 0;
+keyboardPanel.querySelector('.sheet-scroll').scrollTop = 0;
 keyboardMode(preferredNative);
 if (!preferredNative)
 $('grid-mode').focus({ preventScroll: true });
 };
 const typingHelp = $('typing-help').textContent;
 const nativeInput = $('native-input');
+function focusNative() {
+if (document.activeElement === nativeInput) {
+if (viewportFocused)
+return;
+nativeInput.blur();
+}
+nativeInput.style.opacity = '0';
+nativeInput.focus({ preventScroll: true });
+requestAnimationFrame(() => { nativeInput.style.opacity = ''; });
+}
 function resetTextContext() { previousText = ''; nativeInput.value = ''; }
 function stopText() { composing = false; clearTimeout(textTimer); textTimer = 0; textQueue = []; previousText = ''; $('native-input').value = ''; }
 function pumpText() {
@@ -773,9 +777,15 @@ superPointers.clear();
 padSuperPointers.clear();
 superKeys.clear();
 updateModifiers();
-fitViewport();
+watchViewport(true);
 });
-nativeInput.addEventListener('blur', fitViewport);
+nativeInput.addEventListener('blur', () => watchViewport(false));
+nativeInput.addEventListener('pointerdown', event => {
+if (event.pointerType === 'touch' && (!viewportFocused || document.activeElement !== nativeInput)) {
+event.preventDefault();
+focusNative();
+}
+});
 nativeInput.addEventListener('compositionstart', () => { composing = true; });
 nativeInput.addEventListener('compositionend', () => { composing = false; nativeEdit(); });
 nativeInput.addEventListener('input', nativeEdit);
@@ -791,17 +801,17 @@ preferredNative = native;
 save('keyboardMode', native ? 'native' : 'grid');
 if ($('native-panel').hidden !== !native)
 releaseHeldKeys();
+if (!native)
+nativeInput.blur();
 $('native-panel').hidden = !native;
 $('keyboard').hidden = native;
 $('native-tools').hidden = !native;
 $('special-keys').hidden = native;
-document.body.classList.toggle('grid-mode', !native);
+bodyClasses.toggle('grid-mode', !native);
 $('native-mode').setAttribute('aria-pressed', String(native));
 $('grid-mode').setAttribute('aria-pressed', String(!native));
 if (native)
-nativeInput.focus({ preventScroll: true });
-else
-nativeInput.blur();
+focusNative();
 }
 $('native-mode').onclick = () => keyboardMode(true);
 $('grid-mode').onclick = () => keyboardMode(false);
@@ -962,23 +972,98 @@ for (const item of $(id).querySelectorAll('button'))
 item.setAttribute('aria-pressed', String(item === button));
 });
 }
+let viewportFrame = 0, viewportUntil = 0, viewportFocused = false;
+let viewportFullHeight = 0, viewportHeight = 0;
+let openingTimer = 0;
+function stopOpening() {
+clearTimeout(openingTimer);
+openingTimer = 0;
+bodyClasses.remove('keyboard-opening');
+main.style.removeProperty('--opening-shift');
+main.style.removeProperty('--opening-scale');
+}
+function scheduleViewport() {
+if (!viewportFrame && !document.hidden)
+viewportFrame = requestAnimationFrame(() => { viewportFrame = 0; fitViewport(); });
+}
+function watchViewport(focused) {
+var _a;
+if (focused && !viewportFocused)
+viewportFullHeight = main.getBoundingClientRect().height;
+viewportFocused = focused;
+cancelAnimationFrame(viewportFrame);
+viewportFrame = 0;
+if (!focused)
+(_a = window.scrollTo) === null || _a === void 0 ? void 0 : _a.call(window, 0, 0);
+viewportUntil = focused && window.visualViewport ? performance.now() + 1000 : 0;
+fitViewport();
+}
 function fitViewport() {
+var _a;
 const viewport = window.visualViewport;
-const height = (viewport === null || viewport === void 0 ? void 0 : viewport.height) || window.innerHeight;
-if (height) {
-if (!$('keyboard-panel').hidden)
-keyboardViewportHeight = Math.max(keyboardViewportHeight, height);
-const main = document.querySelector('main');
-main.style.height = `${height}px`;
-main.style.top = `${(viewport === null || viewport === void 0 ? void 0 : viewport.offsetTop) || 0}px`;
+const rect = main.getBoundingClientRect(), height = (viewport === null || viewport === void 0 ? void 0 : viewport.height) || window.innerHeight;
+const top = Math.max(0, (viewport === null || viewport === void 0 ? void 0 : viewport.offsetTop) || 0, (parseFloat(main.style.top) || 0) - rect.top);
+const fullHeight = rect.height;
+if (viewportFocused && Math.abs(viewportFullHeight - fullHeight) < 1 && height >= fullHeight - 1 && parseFloat(main.style.paddingBottom) > 80) {
+viewportFocused = false;
+(_a = window.scrollTo) === null || _a === void 0 ? void 0 : _a.call(window, 0, 0);
+}
+viewportFullHeight = fullHeight;
+const focused = viewportFocused && !keyboardPanel.hidden;
+const watching = performance.now() < viewportUntil;
+if (focused) {
+const opening = fullHeight - height > 80 && (parseFloat(main.style.paddingBottom) || 0) <= 80;
+const before = opening ? pad.getBoundingClientRect().height : 0;
+const inset = `${Math.max(0, fullHeight - height)}px`;
+if (main.style.paddingBottom !== inset)
+main.style.paddingBottom = inset;
+if (viewportHeight !== height) {
+viewportHeight = height;
 main.style.setProperty('--view-height', `${height}px`);
-settleKeyboardClose();
 }
-document.body.classList.toggle('native-focused', document.activeElement === nativeInput);
+if (main.style.top !== `${top}px`)
+main.style.top = `${top}px`;
+if (opening && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+const shift = before - pad.getBoundingClientRect().height;
+if (shift > 48) {
+stopOpening();
+main.style.setProperty('--opening-shift', `${shift}px`);
+main.style.setProperty('--opening-scale', String(1 + shift / 32));
+bodyClasses.add('keyboard-opening');
+openingTimer = window.setTimeout(stopOpening, 340);
 }
-(_a = window.visualViewport) === null || _a === void 0 ? void 0 : _a.addEventListener('resize', fitViewport);
-(_b = window.visualViewport) === null || _b === void 0 ? void 0 : _b.addEventListener('scroll', fitViewport);
-window.addEventListener('resize', fitViewport);
+}
+}
+else {
+stopOpening();
+viewportUntil = 0;
+viewportHeight = 0;
+main.style.removeProperty('padding-bottom');
+main.style.removeProperty('top');
+main.style.removeProperty('--view-height');
+}
+if (focused && watching)
+scheduleViewport();
+bodyClasses.toggle('native-focused', focused);
+}
+function viewportChanged() {
+if (viewportFocused)
+viewportUntil = performance.now() + 400;
+scheduleViewport();
+}
+(_a = window.visualViewport) === null || _a === void 0 ? void 0 : _a.addEventListener('resize', viewportChanged);
+(_b = window.visualViewport) === null || _b === void 0 ? void 0 : _b.addEventListener('scroll', viewportChanged);
+window.addEventListener('resize', viewportChanged);
+window.addEventListener('scroll', viewportChanged);
+document.addEventListener('visibilitychange', () => {
+if (document.hidden) {
+stopOpening();
+cancelAnimationFrame(viewportFrame);
+viewportFrame = 0;
+}
+else
+watchViewport(document.activeElement === nativeInput);
+});
 fitViewport();
 window.dispatchEvent(new Event('ghostpad-started'));
 connect();

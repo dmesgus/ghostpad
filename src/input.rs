@@ -188,15 +188,24 @@ impl Pointer {
         events: &[(u16, u16, i32)],
     ) -> io::Result<()> {
         if let Some(f) = device {
-            let mut bytes = Vec::with_capacity((events.len() + 1) * 24);
-            for &(kind, code, value) in events.iter().chain(std::iter::once(&(0, 0, 0))) {
-                bytes.extend_from_slice(&0isize.to_ne_bytes());
-                bytes.extend_from_slice(&0isize.to_ne_bytes());
-                bytes.extend_from_slice(&kind.to_ne_bytes());
-                bytes.extend_from_slice(&code.to_ne_bytes());
-                bytes.extend_from_slice(&value.to_ne_bytes());
+            // Two native longs, type, code, value; the final zeroed event is
+            // SYN_REPORT. Our largest native frame has twelve input events.
+            const TIME_SIZE: usize = 2 * size_of::<isize>();
+            const EVENT_SIZE: usize = TIME_SIZE + 8;
+            let mut bytes = [0u8; 17 * EVENT_SIZE];
+            if events.len() > 16 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "Too many input events",
+                ));
             }
-            f.write_all(&bytes)?;
+            for (i, &(kind, code, value)) in events.iter().enumerate() {
+                let start = i * EVENT_SIZE + TIME_SIZE;
+                bytes[start..start + 2].copy_from_slice(&kind.to_ne_bytes());
+                bytes[start + 2..start + 4].copy_from_slice(&code.to_ne_bytes());
+                bytes[start + 4..start + 8].copy_from_slice(&value.to_ne_bytes());
+            }
+            f.write_all(&bytes[..(events.len() + 1) * EVENT_SIZE])?;
         }
         Ok(())
     }
@@ -296,7 +305,7 @@ impl Pointer {
         if self.right_down {
             self.emit(&[(1, 273, 0)])?;
         }
-        for code in self.keys.clone() {
+        while let Some(&code) = self.keys.first() {
             self.key_event(code, false)?;
             self.keys.remove(&code);
         }
@@ -320,6 +329,43 @@ impl Drop for Pointer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn native_event_bytes_keep_linux_layout_order_and_one_sync_per_frame() {
+        use std::io::{Read, Seek, SeekFrom};
+        let path = std::env::temp_dir().join(format!("ghostpad-events-{}", std::process::id()));
+        let file = OpenOptions::new()
+            .create_new(true)
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        std::fs::remove_file(path).unwrap();
+        let mut device = Some(file);
+        Pointer::write_events(&mut device, &[(2, 0, -123), (2, 1, 456)]).unwrap();
+        Pointer::write_events(&mut device, &[(1, 272, 0)]).unwrap();
+        let file = device.as_mut().unwrap();
+        file.seek(SeekFrom::Start(0)).unwrap();
+        let mut bytes = vec![];
+        file.read_to_end(&mut bytes).unwrap();
+        let time_size = 2 * size_of::<isize>();
+        let event_size = time_size + 8;
+        assert_eq!(bytes.len(), 5 * event_size);
+        let events: Vec<_> = bytes
+            .chunks_exact(event_size)
+            .map(|event| {
+                assert!(event[..time_size].iter().all(|b| *b == 0));
+                (
+                    u16::from_ne_bytes(event[time_size..time_size + 2].try_into().unwrap()),
+                    u16::from_ne_bytes(event[time_size + 2..time_size + 4].try_into().unwrap()),
+                    i32::from_ne_bytes(event[time_size + 4..].try_into().unwrap()),
+                )
+            })
+            .collect();
+        assert_eq!(
+            events,
+            [(2, 0, -123), (2, 1, 456), (0, 0, 0), (1, 272, 0), (0, 0, 0)]
+        );
+    }
     #[test]
     fn device_setup_has_valid_linux_layout_and_terminated_name() {
         let setup = device_setup(false);

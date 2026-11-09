@@ -1,0 +1,144 @@
+{
+  "browser": "155.0.8059.84",
+  "note": "Desktop Chromium, emulated phone viewport, local mocked WebSocket. No real network, uinput, monitor, battery, or phone latency is measured. WebGL may use software rendering. Startup includes test routing. Timing numbers are diagnostic, not guarantees.",
+  "samples": [
+    {
+      "source": "baseline-assets",
+      "round": 1,
+      "pageBytes": 72902,
+      "renderer": "no canvas",
+      "startupToControllerMs": 85.5,
+      "idleSeconds": 2.011,
+      "idleRafRequests": 0,
+      "idleRendererTaskMs": 12.473,
+      "syntheticTouchIntervalMs": 4,
+      "synchronousTouchHandlerMs": {
+        "samples": 160,
+        "median": 0.3,
+        "p95": 0.8,
+        "p99": 2.2
+      },
+      "syntheticMoveToSendMs": {
+        "samples": 160,
+        "median": 0.2,
+        "p95": 0.6,
+        "p99": 0.9
+      }
+    },
+    {
+      "source": "working-tree",
+      "round": 1,
+      "pageBytes": 73602,
+      "renderer": "no canvas",
+      "startupToControllerMs": 77,
+      "idleSeconds": 2.006,
+      "idleRafRequests": 0,
+      "idleRendererTaskMs": 9.295,
+      "syntheticTouchIntervalMs": 4,
+      "synchronousTouchHandlerMs": {
+        "samples": 160,
+        "median": 0.3,
+        "p95": 1.1,
+        "p99": 1.4
+      },
+      "syntheticMoveToSendMs": {
+        "samples": 160,
+        "median": 0.3,
+        "p95": 0.8,
+        "p99": 1.2
+      }
+    },
+    {
+      "source": "working-tree",
+      "round": 2,
+      "pageBytes": 73602,
+      "renderer": "no canvas",
+      "startupToControllerMs": 62.6,
+      "idleSeconds": 2.006,
+      "idleRafRequests": 0,
+      "idleRendererTaskMs": 12.296,
+      "syntheticTouchIntervalMs": 4,
+      "synchronousTouchHandlerMs": {
+        "samples": 160,
+        "median": 0.5,
+        "p95": 1.1,
+        "p99": 1.5
+      },
+      "syntheticMoveToSendMs": {
+        "samples": 160,
+        "median": 0.3,
+        "p95": 1,
+        "p99": 1.2
+      }
+    },
+    {
+      "source": "baseline-assets",
+      "round": 2,
+      "pageBytes": 72902,
+      "renderer": "no canvas",
+      "startupToControllerMs": 72.1,
+      "idleSeconds": 2.005,
+      "idleRafRequests": 0,
+      "idleRendererTaskMs": 10.482,
+      "syntheticTouchIntervalMs": 4,
+      "synchronousTouchHandlerMs": {
+        "samples": 160,
+        "median": 0.3,
+        "p95": 1,
+        "p99": 1.2
+      },
+      "syntheticMoveToSendMs": {
+        "samples": 160,
+        "median": 0.2,
+        "p95": 0.7,
+        "p99": 1.1
+      }
+    },
+    {
+      "source": "baseline-assets",
+      "round": 3,
+      "pageBytes": 72902,
+      "renderer": "no canvas",
+      "startupToControllerMs": 79.4,
+      "idleSeconds": 2.012,
+      "idleRafRequests": 0,
+      "idleRendererTaskMs": 12.872,
+      "syntheticTouchIntervalMs": 4,
+      "synchronousTouchHandlerMs": {
+        "samples": 160,
+        "median": 0.4,
+        "p95": 1.2,
+        "p99": 1.5
+      },
+      "syntheticMoveToSendMs": {
+        "samples": 160,
+        "median": 0.3,
+        "p95": 0.8,
+        "p99": 1.4
+      }
+    },
+    {
+      "source": "working-tree",
+      "round": 3,
+      "pageBytes": 73602,
+      "renderer": "no canvas",
+      "startupToControllerMs": 89.1,
+      "idleSeconds": 2.009,
+      "idleRafRequests": 0,
+      "idleRendererTaskMs": 11.13,
+      "syntheticTouchIntervalMs": 4,
+      "synchronousTouchHandlerMs": {
+        "samples": 160,
+        "median": 0.3,
+        "p95": 0.9,
+        "p99": 1.5
+      },
+      "syntheticMoveToSendMs": {
+        "samples": 160,
+        "median": 0.2,
+        "p95": 0.7,
+        "p99": 1.3
+      }
+    }
+  ]
+}

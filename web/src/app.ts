@@ -4,6 +4,7 @@ import { InputFlow } from './flow.js';
 import { textEdit, normalizeText } from './text.js';
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const pad = $('pad'), dialog = $<HTMLDialogElement>('settings'), sensitivity = $<HTMLInputElement>('sensitivity'), natural = $<HTMLInputElement>('natural');
+const main = document.querySelector('main')!, keyboardPanel = $('keyboard-panel'), bodyClasses = document.body.classList;
 const scrollZone = $('scroll-zone');
 const read = (key: string) => { try { return localStorage.getItem(`ghostpad.${key}`); } catch { return null; } };
 const save = (key: string, value: string) => { try { localStorage.setItem(`ghostpad.${key}`, value); } catch { /* private mode still works in this tab */ } };
@@ -25,6 +26,7 @@ let pointerSpeed = Number(sensitivity.value);
 function preferences() { pointerSpeed = Number(sensitivity.value); $('sensitivity-value').textContent = `${Number(sensitivity.value).toFixed(1)}×`; save('sensitivity', sensitivity.value); save('natural', String(natural.checked)); for (const button of $('tracking-presets').querySelectorAll<HTMLButtonElement>('button')) button.setAttribute('aria-pressed', String(Number(button.dataset.speed) === Number(sensitivity.value))); }
 preferences(); sensitivity.oninput = preferences; natural.onchange = preferences;
 let socket: WebSocket | null = null, ready = false, paused = false, retry = 500, reconnect = 0, heartbeat = 0, lastPong = 0, connectionDeadline = 0;
+let closeConnection: ((retry?: boolean) => void) | null = null;
 let lastMotion = -Infinity, lastPing: number | null = null;
 let flow: InputFlow | null = null;
 let padTouches = 0, ignorePad = false;
@@ -49,15 +51,23 @@ const shortcutModifiers = new Map<string, number>();
 const heldKeys = new Map<number | string, { button: HTMLButtonElement; usage: number; chord: number[] }>();
 const heldUsages = new Map<number, number>();
 let hold = 0, frame = 0, pending: { type: 'move' | 'scroll'; dx: number; dy: number } | { type: 'zoom'; scale: number } | null = null;
-function status(label: string, detail: string, online = false) { $('status').textContent = label; $('detail').textContent = detail; $('dot').classList.toggle('online', online); document.body.classList.toggle('connected', online); if (!online) $('hint').textContent = detail; }
+function status(label: string, detail: string, online = false) { $('status').textContent = label; $('detail').textContent = detail; $('dot').classList.toggle('online', online); bodyClasses.toggle('connected', online); if (!online) $('hint').textContent = detail; }
 function transmit(bytes: ArrayBuffer) {
   if (!ready || socket?.readyState !== WebSocket.OPEN) return;
   if (flow) { flow.send(bytes); return; }
-  if (socket.bufferedAmount > 256) { socket.close(); return; }
-  socket.send(bytes);
+  if (socket.bufferedAmount > 256) { closeConnection?.(); return; }
+  try { socket.send(bytes); } catch { closeConnection?.(); }
 }
 function send(code: number, dx?: number, dy?: number) {
   if (!ready || socket?.readyState !== WebSocket.OPEN) return;
+  // Wide swipes or coalesced bursts can exceed one packet's range. Split the
+  // vector proportionally instead of clipping distance or changing direction.
+  if (dx !== undefined && (Math.abs(dx) > 2048 || Math.abs(dy!) > 2048)) {
+    const parts = Math.ceil(Math.max(Math.abs(dx), Math.abs(dy!)) / 2048);
+    if (!Number.isFinite(parts)) return;
+    for (let i = 0; i < parts; i++) send(code, dx / parts, dy! / parts);
+    return;
+  }
   const bytes = new ArrayBuffer(dx === undefined ? 1 : 9), view = new DataView(bytes);
   view.setUint8(0, code);
   if (dx !== undefined) { view.setFloat32(1, Math.max(-2048, Math.min(2048, dx)), true); view.setFloat32(5, Math.max(-2048, Math.min(2048, dy!)), true); }
@@ -187,7 +197,9 @@ $('scroll-side').addEventListener('click', event => {
 });
 function connect() {
   clearTimeout(reconnect);
-  if (paused || document.hidden || socket) return;
+  if (paused || document.hidden) return;
+  if (socket && (socket.readyState === WebSocket.CLOSING || socket.readyState === WebSocket.CLOSED)) closeConnection?.(false);
+  if (socket) return;
   if (!key) { status('Pair your phone', 'Scan the QR code in the Ghostpad receiver terminal.'); $('hint').textContent = 'Scan your computer’s QR code to connect.'; return; }
   status('Connecting', 'Looking for your computer on this Wi-Fi network.');
   let ws: WebSocket;
@@ -197,19 +209,22 @@ function connect() {
   }
   catch { status('Connection blocked', 'Safari could not open the local connection. Open the exact address from the receiver.'); $('reload').hidden = false; return; }
   socket = ws;
+  closeConnection = close;
   connectionDeadline = window.setTimeout(() => {
     if (socket !== ws || ready) return;
     status('Connection timed out', 'The page loaded, but the computer did not finish connecting. Check that Ghostpad is still running.');
     $('reload').hidden = false;
-    ws.close();
-    finish();
+    close();
   }, 7000);
-  ws.onopen = () => { if (socket === ws) ws.send(key); else ws.close(); };
+  ws.onopen = () => {
+    if (socket !== ws) { ws.close(); return; }
+    try { ws.send(key); } catch { close(); }
+  };
   ws.onmessage = e => {
     if (socket !== ws) return;
     if (e.data instanceof ArrayBuffer) { flow?.acknowledge(e.data); return; }
     if (e.data === 'pong') {
-      lastPong = Date.now();
+      lastPong = performance.now();
       if (lastPing !== null) {
         const ms = Math.round(performance.now() - lastPing);
         $('latency').textContent = `Wi-Fi round-trip: ${ms} ms${flow && flow.interval > 8 ? ' · adapting to a slower link' : ''}`;
@@ -220,81 +235,59 @@ function connect() {
     if (typeof e.data === 'string' && e.data.startsWith('ready:')) {
       clearTimeout(connectionDeadline); $('reload').hidden = true;
       if (ready) return;
-      ready = true; retry = 500; lastPong = Date.now(); lastPing = null;
+      ready = true; retry = 500; lastPong = performance.now(); lastPing = null;
       if (ws.protocol === 'ghostpad.flow.v1') flow = new InputFlow(ws, {
         now: () => performance.now(), later: (fn, ms) => window.setTimeout(fn, ms), clear: id => clearTimeout(id),
-      }, () => { ws.close(); finish(); });
+      }, () => close());
       const preview = e.data === 'ready:preview';
       status(preview ? 'Preview' : 'Connected', preview ? 'Preview mode. Gestures connect, but do not move the computer’s cursor.' : `Connected locally · ${location.protocol === 'https:' ? 'encrypted' : 'unencrypted, trusted Wi-Fi only'}`, true);
       $('hint').textContent = preview ? 'Connected in preview. Cursor control is off.' : 'Your desktop, at your fingertips.';
-      heartbeat = window.setInterval(() => { if (Date.now() - lastPong > 6000) ws.close(); else if (lastPing === null) { lastPing = performance.now(); send(8); } }, 1500);
+      heartbeat = window.setInterval(() => { if (performance.now() - lastPong > 6000) close(); else if (lastPing === null) { lastPing = performance.now(); send(8); } }, 1500);
     } else if (e.data === 'unauthorized') {
-      paused = true; key = ''; save('key', ''); status('Pair again', 'Pairing was revoked. Scan the receiver’s new QR code.'); ws.close();
-    } else if (e.data === 'busy') { status('Computer busy', 'Another phone is connected. Disconnect it to use this phone.'); ws.close(); }
+      paused = true; key = ''; save('key', ''); status('Pair again', 'Pairing was revoked. Scan the receiver’s new QR code.'); close();
+    } else if (e.data === 'busy') { status('Computer busy', 'Another phone is connected. Disconnect it to use this phone.'); close(); }
   };
-  ws.onerror = () => ws.close();
-  function finish() {
+  ws.onerror = () => close();
+  function close(shouldRetry = true) {
+    // A suspended or broken browser connection may never dispatch onclose.
+    // Retire it now; late events cannot affect its replacement.
+    ws.close(); finish(shouldRetry);
+  }
+  function finish(shouldRetry = true) {
     if (socket !== ws) return;
-    clearTimeout(connectionDeadline); flow?.stop(); flow = null; ready = false; socket = null; clearInterval(heartbeat); cancel();
-    if (!paused && !document.hidden) {
+    clearTimeout(connectionDeadline); flow?.stop(); flow = null; ready = false; socket = null; closeConnection = null; lastPing = null; clearInterval(heartbeat); cancel();
+    if (shouldRetry && !paused && !document.hidden) {
       if ($('status').textContent !== 'Computer busy') status('Reconnecting', 'Keep both devices on the same Wi-Fi. Reconnecting automatically.');
       reconnect = window.setTimeout(connect, retry + Math.random() * 200); retry = Math.min(8000, retry * 1.7);
     }
   }
-  ws.onclose = finish;
+  ws.onclose = () => finish();
 }
-function suspend() { cancel(); flow?.stop(); flow = null; clearTimeout(reconnect); clearInterval(heartbeat); socket?.close(); }
-document.addEventListener('visibilitychange', () => { if (document.hidden) suspend(); else { if (socket?.readyState === WebSocket.CLOSED) socket = null; connect(); } });
+function suspend() { cancel(); closeConnection?.(false); clearTimeout(reconnect); clearInterval(heartbeat); }
+document.addEventListener('visibilitychange', () => { if (document.hidden) suspend(); else connect(); });
 window.addEventListener('pagehide', suspend); window.addEventListener('pageshow', connect); window.addEventListener('online', connect);
 let settingsOpener: HTMLElement = $('settings-open');
-let keyboardViewportHeight = 0;
 let preferredNative = read('keyboardMode') !== 'grid';
-let closeTimer = 0, closeDeadline = 0, closeStartHeight = 0, closingSpace = 0;
-function finishKeyboardClose() {
-  clearTimeout(closeTimer); closeDeadline = 0;
-  document.body.classList.remove('keyboard-closing');
-  document.querySelector('main')!.style.removeProperty('--closing-space');
-}
-function settleKeyboardClose() {
-  if (!closeDeadline) return;
-  clearTimeout(closeTimer);
-  const height = window.visualViewport?.height || innerHeight;
-  document.querySelector('main')!.style.setProperty('--closing-space', `${Math.max(0, closingSpace - (height - closeStartHeight))}px`);
-  closeTimer = window.setTimeout(() => {
-    closeDeadline = 0;
-    document.querySelector('main')!.style.setProperty('--closing-space', '0px');
-    closeTimer = window.setTimeout(finishKeyboardClose, 180);
-  }, Math.max(0, Math.min(160, closeDeadline - performance.now())));
-}
 function closeSettings(restore = true) {
   if (!dialog.open) return;
-  dialog.removeAttribute('open'); document.body.classList.remove('settings-open');
+  dialog.removeAttribute('open'); bodyClasses.remove('settings-open');
   if (restore) settingsOpener.focus({ preventScroll: true });
 }
 function closeKeyboard(restore = true) {
-  if ($('keyboard-panel').hidden) { cancel(); return; }
-  const panelHeight = $('keyboard-panel').getBoundingClientRect().height;
-  const recovering = document.activeElement === nativeInput && (window.visualViewport?.height || innerHeight) < Math.max(innerHeight, keyboardViewportHeight) - 80;
-  $('keyboard-panel').hidden = true;
-  $('keyboard-toggle').setAttribute('aria-expanded', 'false');
-  document.body.classList.remove('keyboard-open');
-  if (recovering) {
-    // Reserve the removed panel's space while the OS keyboard restores the viewport.
-    const dockHeight = document.querySelector('.dock')!.getBoundingClientRect().height + $('settings-handle').getBoundingClientRect().height;
-    const bottomInset = parseFloat(getComputedStyle(document.querySelector('main')!).paddingBottom) || 0;
-    closingSpace = Math.max(0, panelHeight - dockHeight - bottomInset);
-    closeStartHeight = window.visualViewport?.height || innerHeight;
-    document.querySelector('main')!.style.setProperty('--closing-space', `${closingSpace}px`);
-    document.body.classList.add('keyboard-closing');
-    closeDeadline = performance.now() + 800; settleKeyboardClose();
-  }
+  if (keyboardPanel.hidden) { cancel(); return; }
+  // Dismiss the OS keyboard while its focused field still has a rendered box.
+  // Hiding first can leave Safari's keyboard accessory and viewport stranded.
   nativeInput.blur(); cancel();
+  keyboardPanel.hidden = true;
+  $('keyboard-toggle').setAttribute('aria-expanded', 'false');
+  bodyClasses.remove('keyboard-open');
+  fitViewport();
   $('typing-help').textContent = typingHelp;
   if (restore) $('keyboard-toggle').focus({ preventScroll: true });
 }
 function openSettings(opener: HTMLElement = $('settings-open')) {
-  settingsOpener = opener; closeKeyboard(false); finishKeyboardClose(); cancel();
-  dialog.setAttribute('open', ''); document.body.classList.add('settings-open');
+  settingsOpener = opener; closeKeyboard(false); cancel();
+  dialog.setAttribute('open', ''); bodyClasses.add('settings-open');
   $('settings-close').focus({ preventScroll: true });
 }
 $('settings-open').onclick = () => openSettings();
@@ -326,7 +319,7 @@ for (const id of ['keyboard-close', 'native-mode', 'grid-mode', 'settings-close'
 document.addEventListener('keydown', event => {
   if (event.key !== 'Escape' || event.isComposing) return;
   if (dialog.open) { event.preventDefault(); closeSettings(); }
-  else if (!$('keyboard-panel').hidden) { event.preventDefault(); closeKeyboard(); }
+  else if (!keyboardPanel.hidden) { event.preventDefault(); closeKeyboard(); }
 });
 // A rapid repeat tap where the opener used to be must not become remote input.
 let openingTap: { x: number; y: number; until: number } | null = null;
@@ -369,7 +362,7 @@ function updateModifiers() {
   const names = Array.from(shortcutModifiers.keys(), name => name[0].toUpperCase() + name.slice(1));
   if (modifiers.has('super')) names.unshift('Super held');
   $('shortcut-help').textContent = names.length ? `${names.join(' + ')} · tap a key` : 'Hold Super; lift to release. Tap Shift, Ctrl or Alt for one shortcut.';
-  document.body.classList.toggle('super-held', modifiers.has('super'));
+  bodyClasses.toggle('super-held', modifiers.has('super'));
   updateSuperFill();
   if (ready) $('hint').textContent = modifiers.has('super') ? 'Super held · 1 finger moves · 2 fingers resize' : 'Pinch to zoom · hold Super to move or resize windows.';
 }
@@ -425,7 +418,7 @@ for (const id of ['mod-super', 'key-super']) {
   });
   button.addEventListener('blur', () => { superKeys.delete(button); releaseSuper(); });
 }
-window.addEventListener('blur', cancel);
+window.addEventListener('blur', () => { cancel(); if (viewportFocused) watchViewport(false); });
 const rightClick = $('right-click');
 rightClick.onclick = () => { if (ready) { nativeInput.blur(); resetTextContext(); gestures.cancel(); if (padTouches) ignorePad = true; clearTimeout(hold); flush(); send(4); } };
 // Handle touch taps directly: browsers can suppress a compatibility click after
@@ -441,18 +434,26 @@ for (const type of ['touchmove', 'touchend'] as const) rightClick.addEventListen
 }, { passive: false });
 $('keyboard-toggle').onclick = event => {
   if (event.detail > 0) openingTap = { x: event.clientX, y: event.clientY, until: performance.now() + 450 };
-  finishKeyboardClose();
-  if (!$('keyboard-panel').hidden) { closeKeyboard(); return; }
-  keyboardViewportHeight = window.visualViewport?.height || window.innerHeight;
-  cancel(); closeSettings(false); $('keyboard-panel').hidden = false;
-  $('keyboard-toggle').setAttribute('aria-expanded', 'true'); document.body.classList.toggle('keyboard-open', true);
+  if (!keyboardPanel.hidden) { closeKeyboard(); return; }
+  cancel(); closeSettings(false); keyboardPanel.hidden = false;
+  $('keyboard-toggle').setAttribute('aria-expanded', 'true'); bodyClasses.toggle('keyboard-open', true);
   $('typing-help').textContent = typingHelp;
-  $('keyboard-panel').querySelector('.sheet-scroll')!.scrollTop = 0;
+  keyboardPanel.querySelector('.sheet-scroll')!.scrollTop = 0;
   keyboardMode(preferredNative);
   if (!preferredNative) $('grid-mode').focus({ preventScroll: true });
 };
 const typingHelp = $('typing-help').textContent;
 const nativeInput = $<HTMLTextAreaElement>('native-input');
+function focusNative() {
+  if (document.activeElement === nativeInput) {
+    if (viewportFocused) return;
+    nativeInput.blur();
+  }
+  // Safari otherwise starts a second page scroll toward the field's old position.
+  nativeInput.style.opacity = '0';
+  nativeInput.focus({ preventScroll: true });
+  requestAnimationFrame(() => { nativeInput.style.opacity = ''; });
+}
 function resetTextContext() { previousText = ''; nativeInput.value = ''; }
 function stopText() { composing = false; clearTimeout(textTimer); textTimer = 0; textQueue = []; previousText = ''; $<HTMLTextAreaElement>('native-input').value = ''; }
 function pumpText() {
@@ -486,9 +487,15 @@ function nativeEdit() {
 nativeInput.addEventListener('focus', () => {
   // Plain typing must not accidentally become Super/Ctrl/Alt shortcuts.
   gestures.cancel(); releaseHeldKeys(); flush(); send(7); modifiers.clear(); shortcutModifiers.clear(); superPointers.clear(); padSuperPointers.clear(); superKeys.clear(); updateModifiers();
-  fitViewport();
+  watchViewport(true);
 });
-nativeInput.addEventListener('blur', fitViewport);
+nativeInput.addEventListener('blur', () => watchViewport(false));
+// The OS can hide its keyboard without removing DOM focus from the textarea.
+nativeInput.addEventListener('pointerdown', event => {
+  if (event.pointerType === 'touch' && (!viewportFocused || document.activeElement !== nativeInput)) {
+    event.preventDefault(); focusNative();
+  }
+});
 nativeInput.addEventListener('compositionstart', () => { composing = true; });
 nativeInput.addEventListener('compositionend', () => { composing = false; nativeEdit(); });
 nativeInput.addEventListener('input', nativeEdit);
@@ -501,11 +508,12 @@ nativeInput.addEventListener('beforeinput', (event: InputEvent) => {
 function keyboardMode(native: boolean) {
   preferredNative = native; save('keyboardMode', native ? 'native' : 'grid');
   if ($('native-panel').hidden !== !native) releaseHeldKeys();
+  if (!native) nativeInput.blur();
   $('native-panel').hidden = !native; $('keyboard').hidden = native;
   $('native-tools').hidden = !native; $('special-keys').hidden = native;
-  document.body.classList.toggle('grid-mode', !native);
+  bodyClasses.toggle('grid-mode', !native);
   $('native-mode').setAttribute('aria-pressed', String(native)); $('grid-mode').setAttribute('aria-pressed', String(!native));
-  if (native) nativeInput.focus({ preventScroll: true }); else nativeInput.blur();
+  if (native) focusNative();
 }
 $('native-mode').onclick = () => keyboardMode(true);
 $('grid-mode').onclick = () => keyboardMode(false);
@@ -615,24 +623,81 @@ for (const id of ['tracking-presets', 'scroll-presets']) {
     for (const item of $(id).querySelectorAll<HTMLButtonElement>('button')) item.setAttribute('aria-pressed', String(item === button));
   });
 }
-// Safari can pan the visual viewport as well as resize it when the keyboard opens.
-// Follow both changes; CSS height media queries still see the larger layout viewport.
+// Keep the outer painting/clip bounds at full CSS height. Reserve the native
+// keyboard's space with padding inside that frame; never shrink the root layer.
+// Blur releases the inset immediately, including during delayed Safari events.
+let viewportFrame = 0, viewportUntil = 0, viewportFocused = false;
+let viewportFullHeight = 0, viewportHeight = 0;
+let openingTimer = 0;
+function stopOpening() {
+  clearTimeout(openingTimer); openingTimer = 0;
+  bodyClasses.remove('keyboard-opening');
+  main.style.removeProperty('--opening-shift'); main.style.removeProperty('--opening-scale');
+}
+function scheduleViewport() {
+  if (!viewportFrame && !document.hidden) viewportFrame = requestAnimationFrame(() => { viewportFrame = 0; fitViewport(); });
+}
+function watchViewport(focused: boolean) {
+  if (focused && !viewportFocused) viewportFullHeight = main.getBoundingClientRect().height;
+  viewportFocused = focused;
+  cancelAnimationFrame(viewportFrame); viewportFrame = 0;
+  if (!focused) window.scrollTo?.(0, 0);
+  viewportUntil = focused && window.visualViewport ? performance.now() + 1000 : 0;
+  fitViewport();
+}
 function fitViewport() {
   const viewport = window.visualViewport;
-  const height = viewport?.height || window.innerHeight;
-  if (height) {
-    if (!$('keyboard-panel').hidden) keyboardViewportHeight = Math.max(keyboardViewportHeight, height);
-    const main = document.querySelector('main')!;
-    main.style.height = `${height}px`;
-    main.style.top = `${viewport?.offsetTop || 0}px`;
-    main.style.setProperty('--view-height', `${height}px`);
-    settleKeyboardClose();
+  const rect = main.getBoundingClientRect(), height = viewport?.height || window.innerHeight;
+  const top = Math.max(0, viewport?.offsetTop || 0, (parseFloat(main.style.top) || 0) - rect.top);
+  const fullHeight = rect.height;
+  if (viewportFocused && Math.abs(viewportFullHeight - fullHeight) < 1 && height >= fullHeight - 1 && parseFloat(main.style.paddingBottom) > 80) {
+    viewportFocused = false; window.scrollTo?.(0, 0);
   }
-  document.body.classList.toggle('native-focused', document.activeElement === nativeInput);
+  viewportFullHeight = fullHeight;
+  const focused = viewportFocused && !keyboardPanel.hidden;
+  const watching = performance.now() < viewportUntil;
+  if (focused) {
+    const opening = fullHeight - height > 80 && (parseFloat(main.style.paddingBottom) || 0) <= 80;
+    const before = opening ? pad.getBoundingClientRect().height : 0;
+    const inset = `${Math.max(0, fullHeight - height)}px`;
+    if (main.style.paddingBottom !== inset) main.style.paddingBottom = inset;
+    if (viewportHeight !== height) {
+      viewportHeight = height;
+      main.style.setProperty('--view-height', `${height}px`);
+    }
+    if (main.style.top !== `${top}px`) main.style.top = `${top}px`;
+    if (opening && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      const shift = before - pad.getBoundingClientRect().height;
+      if (shift > 48) {
+        stopOpening();
+        main.style.setProperty('--opening-shift', `${shift}px`);
+        main.style.setProperty('--opening-scale', String(1 + shift / 32));
+        bodyClasses.add('keyboard-opening');
+        openingTimer = window.setTimeout(stopOpening, 340);
+      }
+    }
+  } else {
+    stopOpening();
+    viewportUntil = 0; viewportHeight = 0;
+    main.style.removeProperty('padding-bottom'); main.style.removeProperty('top'); main.style.removeProperty('--view-height');
+  }
+  if (focused && watching) scheduleViewport();
+  bodyClasses.toggle('native-focused', focused);
 }
-window.visualViewport?.addEventListener('resize', fitViewport);
-window.visualViewport?.addEventListener('scroll', fitViewport);
-window.addEventListener('resize', fitViewport); fitViewport();
+// Resize may precede the actual metric change, even long after initial focus.
+function viewportChanged() {
+  if (viewportFocused) viewportUntil = performance.now() + 400;
+  scheduleViewport();
+}
+window.visualViewport?.addEventListener('resize', viewportChanged);
+window.visualViewport?.addEventListener('scroll', viewportChanged);
+window.addEventListener('resize', viewportChanged);
+window.addEventListener('scroll', viewportChanged);
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) { stopOpening(); cancelAnimationFrame(viewportFrame); viewportFrame = 0; }
+  else watchViewport(document.activeElement === nativeInput);
+});
+fitViewport();
 
 window.dispatchEvent(new Event('ghostpad-started'));
 connect();

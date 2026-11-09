@@ -103,9 +103,9 @@ impl Touchpad {
         self.frames.push(events.to_vec());
         crate::input::Pointer::write_events(&mut self.device, events)
     }
-    fn positions(scale: f32) -> Vec<Event> {
+    fn positions(scale: f32) -> [Event; 8] {
         let half = (INITIAL_DISTANCE * scale / 2.).round() as i32;
-        vec![
+        [
             (EV_ABS, SLOT, 0),
             (EV_ABS, X, 8000 - half),
             (EV_ABS, Y, 5000),
@@ -127,7 +127,7 @@ impl Touchpad {
             // Establish a neutral pair before moving it. No Ctrl or wheel events.
             let first = self.next_id;
             self.next_id = self.next_id.wrapping_add(2);
-            let mut begin = vec![
+            let begin = [
                 (EV_KEY, BTN_TOUCH, 1),
                 (EV_KEY, BTN_TOOL_DOUBLETAP, 1),
                 (EV_ABS, SLOT, 0),
@@ -138,8 +138,9 @@ impl Touchpad {
                 (EV_ABS, TRACKING_ID, i32::from(first.wrapping_add(1))),
                 (EV_ABS, X, 9000),
                 (EV_ABS, Y, 5000),
+                (EV_ABS, 0, 7000),
+                (EV_ABS, 1, 5000),
             ];
-            begin.extend([(EV_ABS, 0, 7000), (EV_ABS, 1, 5000)]);
             self.active = true; // release can recover even if the device write fails
             self.emit(&begin)?;
         }

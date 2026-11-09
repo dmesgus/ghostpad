@@ -52,8 +52,8 @@ mod tests {
     fn phone_boot_is_self_contained() {
         let page = super::page();
         assert!(
-            page.html.len() < 75_000,
-            "Embedded UI exceeded its 75 KB budget (including input flow control)"
+            page.html.len() < 77_000,
+            "Embedded UI exceeded its 77 KB budget (including compositor keyboard transitions)"
         );
         assert!(!page.html.contains("<link rel=\"stylesheet\""));
         assert!(!page.html.contains("<script src="));

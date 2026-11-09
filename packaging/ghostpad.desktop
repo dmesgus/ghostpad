@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Ghostpad
+Comment=Use your phone as a wireless trackpad
+Exec=ghostpad
+TryExec=ghostpad
+Icon=ghostpad
+Terminal=true
+StartupNotify=false
+Categories=Utility;
+Keywords=phone;trackpad;touchpad;keyboard;wireless;

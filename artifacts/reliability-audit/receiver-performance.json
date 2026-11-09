@@ -1,0 +1,455 @@
+{
+  "note": "Temporary optimized builds from the exact pre-audit working tree and updated working tree. Rust allocation counts include reallocations and requested bytes, not process RSS or OpenSSL allocations. Controller I/O uses an in-memory stream; counts are underlying read/write calls, not measured network syscalls. Native event serialization writes to /dev/null; pinch uses preview mode. No input is injected into the desktop. Timing includes allocation instrumentation and is diagnostic, not phone latency.",
+  "samples": [
+    {
+      "source": "baseline",
+      "trial": 1,
+      "metrics": [
+        {
+          "name": "controller_sessions_200_moves",
+          "iterations": 500,
+          "allocations": 112500,
+          "allocatedBytes": 1629000,
+          "elapsedUs": 17651
+        },
+        {
+          "name": "batched_session_io",
+          "moves": 200,
+          "underlyingReads": 791,
+          "underlyingWrites": 6
+        },
+        {
+          "name": "http_io",
+          "underlyingReads": 46,
+          "underlyingWrites": 12
+        },
+        {
+          "name": "websocket_frame",
+          "iterations": 100000,
+          "allocations": 100000,
+          "allocatedBytes": 900000,
+          "elapsedUs": 6049
+        },
+        {
+          "name": "native_scroll_frame_to_dev_null",
+          "iterations": 100000,
+          "allocations": 100000,
+          "allocatedBytes": 12000000,
+          "elapsedUs": 93532
+        },
+        {
+          "name": "pinch_positions_preview",
+          "iterations": 100000,
+          "allocations": 100000,
+          "allocatedBytes": 6400000,
+          "elapsedUs": 3230
+        }
+      ]
+    },
+    {
+      "source": "updated",
+      "trial": 1,
+      "metrics": [
+        {
+          "name": "controller_sessions_200_moves",
+          "iterations": 500,
+          "allocations": 13000,
+          "allocatedBytes": 1310000,
+          "elapsedUs": 13277
+        },
+        {
+          "name": "batched_session_io",
+          "moves": 200,
+          "underlyingReads": 4,
+          "underlyingWrites": 3
+        },
+        {
+          "name": "http_io",
+          "underlyingReads": 1,
+          "underlyingWrites": 2
+        },
+        {
+          "name": "websocket_frame",
+          "iterations": 100000,
+          "allocations": 0,
+          "allocatedBytes": 0,
+          "elapsedUs": 1729
+        },
+        {
+          "name": "native_scroll_frame_to_dev_null",
+          "iterations": 100000,
+          "allocations": 0,
+          "allocatedBytes": 0,
+          "elapsedUs": 82857
+        },
+        {
+          "name": "pinch_positions_preview",
+          "iterations": 100000,
+          "allocations": 0,
+          "allocatedBytes": 0,
+          "elapsedUs": 312
+        }
+      ]
+    },
+    {
+      "source": "updated",
+      "trial": 2,
+      "metrics": [
+        {
+          "name": "controller_sessions_200_moves",
+          "iterations": 500,
+          "allocations": 13000,
+          "allocatedBytes": 1310000,
+          "elapsedUs": 14096
+        },
+        {
+          "name": "batched_session_io",
+          "moves": 200,
+          "underlyingReads": 4,
+          "underlyingWrites": 3
+        },
+        {
+          "name": "http_io",
+          "underlyingReads": 1,
+          "underlyingWrites": 2
+        },
+        {
+          "name": "websocket_frame",
+          "iterations": 100000,
+          "allocations": 0,
+          "allocatedBytes": 0,
+          "elapsedUs": 1762
+        },
+        {
+          "name": "native_scroll_frame_to_dev_null",
+          "iterations": 100000,
+          "allocations": 0,
+          "allocatedBytes": 0,
+          "elapsedUs": 78986
+        },
+        {
+          "name": "pinch_positions_preview",
+          "iterations": 100000,
+          "allocations": 0,
+          "allocatedBytes": 0,
+          "elapsedUs": 291
+        }
+      ]
+    },
+    {
+      "source": "baseline",
+      "trial": 2,
+      "metrics": [
+        {
+          "name": "controller_sessions_200_moves",
+          "iterations": 500,
+          "allocations": 112500,
+          "allocatedBytes": 1629000,
+          "elapsedUs": 14273
+        },
+        {
+          "name": "batched_session_io",
+          "moves": 200,
+          "underlyingReads": 791,
+          "underlyingWrites": 6
+        },
+        {
+          "name": "http_io",
+          "underlyingReads": 46,
+          "underlyingWrites": 12
+        },
+        {
+          "name": "websocket_frame",
+          "iterations": 100000,
+          "allocations": 100000,
+          "allocatedBytes": 900000,
+          "elapsedUs": 4869
+        },
+        {
+          "name": "native_scroll_frame_to_dev_null",
+          "iterations": 100000,
+          "allocations": 100000,
+          "allocatedBytes": 12000000,
+          "elapsedUs": 89094
+        },
+        {
+          "name": "pinch_positions_preview",
+          "iterations": 100000,
+          "allocations": 100000,
+          "allocatedBytes": 6400000,
+          "elapsedUs": 3180
+        }
+      ]
+    },
+    {
+      "source": "baseline",
+      "trial": 3,
+      "metrics": [
+        {
+          "name": "controller_sessions_200_moves",
+          "iterations": 500,
+          "allocations": 112500,
+          "allocatedBytes": 1629000,
+          "elapsedUs": 16149
+        },
+        {
+          "name": "batched_session_io",
+          "moves": 200,
+          "underlyingReads": 791,
+          "underlyingWrites": 6
+        },
+        {
+          "name": "http_io",
+          "underlyingReads": 46,
+          "underlyingWrites": 12
+        },
+        {
+          "name": "websocket_frame",
+          "iterations": 100000,
+          "allocations": 100000,
+          "allocatedBytes": 900000,
+          "elapsedUs": 4846
+        },
+        {
+          "name": "native_scroll_frame_to_dev_null",
+          "iterations": 100000,
+          "allocations": 100000,
+          "allocatedBytes": 12000000,
+          "elapsedUs": 95403
+        },
+        {
+          "name": "pinch_positions_preview",
+          "iterations": 100000,
+          "allocations": 100000,
+          "allocatedBytes": 6400000,
+          "elapsedUs": 4384
+        }
+      ]
+    },
+    {
+      "source": "updated",
+      "trial": 3,
+      "metrics": [
+        {
+          "name": "controller_sessions_200_moves",
+          "iterations": 500,
+          "allocations": 13000,
+          "allocatedBytes": 1310000,
+          "elapsedUs": 16767
+        },
+        {
+          "name": "batched_session_io",
+          "moves": 200,
+          "underlyingReads": 4,
+          "underlyingWrites": 3
+        },
+        {
+          "name": "http_io",
+          "underlyingReads": 1,
+          "underlyingWrites": 2
+        },
+        {
+          "name": "websocket_frame",
+          "iterations": 100000,
+          "allocations": 0,
+          "allocatedBytes": 0,
+          "elapsedUs": 2341
+        },
+        {
+          "name": "native_scroll_frame_to_dev_null",
+          "iterations": 100000,
+          "allocations": 0,
+          "allocatedBytes": 0,
+          "elapsedUs": 95354
+        },
+        {
+          "name": "pinch_positions_preview",
+          "iterations": 100000,
+          "allocations": 0,
+          "allocatedBytes": 0,
+          "elapsedUs": 322
+        }
+      ]
+    },
+    {
+      "source": "updated",
+      "trial": 4,
+      "metrics": [
+        {
+          "name": "controller_sessions_200_moves",
+          "iterations": 500,
+          "allocations": 13000,
+          "allocatedBytes": 1310000,
+          "elapsedUs": 16996
+        },
+        {
+          "name": "batched_session_io",
+          "moves": 200,
+          "underlyingReads": 4,
+          "underlyingWrites": 3
+        },
+        {
+          "name": "http_io",
+          "underlyingReads": 1,
+          "underlyingWrites": 2
+        },
+        {
+          "name": "websocket_frame",
+          "iterations": 100000,
+          "allocations": 0,
+          "allocatedBytes": 0,
+          "elapsedUs": 2933
+        },
+        {
+          "name": "native_scroll_frame_to_dev_null",
+          "iterations": 100000,
+          "allocations": 0,
+          "allocatedBytes": 0,
+          "elapsedUs": 87149
+        },
+        {
+          "name": "pinch_positions_preview",
+          "iterations": 100000,
+          "allocations": 0,
+          "allocatedBytes": 0,
+          "elapsedUs": 347
+        }
+      ]
+    },
+    {
+      "source": "baseline",
+      "trial": 4,
+      "metrics": [
+        {
+          "name": "controller_sessions_200_moves",
+          "iterations": 500,
+          "allocations": 112500,
+          "allocatedBytes": 1629000,
+          "elapsedUs": 13745
+        },
+        {
+          "name": "batched_session_io",
+          "moves": 200,
+          "underlyingReads": 791,
+          "underlyingWrites": 6
+        },
+        {
+          "name": "http_io",
+          "underlyingReads": 46,
+          "underlyingWrites": 12
+        },
+        {
+          "name": "websocket_frame",
+          "iterations": 100000,
+          "allocations": 100000,
+          "allocatedBytes": 900000,
+          "elapsedUs": 4482
+        },
+        {
+          "name": "native_scroll_frame_to_dev_null",
+          "iterations": 100000,
+          "allocations": 100000,
+          "allocatedBytes": 12000000,
+          "elapsedUs": 87120
+        },
+        {
+          "name": "pinch_positions_preview",
+          "iterations": 100000,
+          "allocations": 100000,
+          "allocatedBytes": 6400000,
+          "elapsedUs": 3873
+        }
+      ]
+    },
+    {
+      "source": "baseline",
+      "trial": 5,
+      "metrics": [
+        {
+          "name": "controller_sessions_200_moves",
+          "iterations": 500,
+          "allocations": 112500,
+          "allocatedBytes": 1629000,
+          "elapsedUs": 15935
+        },
+        {
+          "name": "batched_session_io",
+          "moves": 200,
+          "underlyingReads": 791,
+          "underlyingWrites": 6
+        },
+        {
+          "name": "http_io",
+          "underlyingReads": 46,
+          "underlyingWrites": 12
+        },
+        {
+          "name": "websocket_frame",
+          "iterations": 100000,
+          "allocations": 100000,
+          "allocatedBytes": 900000,
+          "elapsedUs": 4816
+        },
+        {
+          "name": "native_scroll_frame_to_dev_null",
+          "iterations": 100000,
+          "allocations": 100000,
+          "allocatedBytes": 12000000,
+          "elapsedUs": 93220
+        },
+        {
+          "name": "pinch_positions_preview",
+          "iterations": 100000,
+          "allocations": 100000,
+          "allocatedBytes": 6400000,
+          "elapsedUs": 3106
+        }
+      ]
+    },
+    {
+      "source": "updated",
+      "trial": 5,
+      "metrics": [
+        {
+          "name": "controller_sessions_200_moves",
+          "iterations": 500,
+          "allocations": 13000,
+          "allocatedBytes": 1310000,
+          "elapsedUs": 14774
+        },
+        {
+          "name": "batched_session_io",
+          "moves": 200,
+          "underlyingReads": 4,
+          "underlyingWrites": 3
+        },
+        {
+          "name": "http_io",
+          "underlyingReads": 1,
+          "underlyingWrites": 2
+        },
+        {
+          "name": "websocket_frame",
+          "iterations": 100000,
+          "allocations": 0,
+          "allocatedBytes": 0,
+          "elapsedUs": 2286
+        },
+        {
+          "name": "native_scroll_frame_to_dev_null",
+          "iterations": 100000,
+          "allocations": 0,
+          "allocatedBytes": 0,
+          "elapsedUs": 83592
+        },
+        {
+          "name": "pinch_positions_preview",
+          "iterations": 100000,
+          "allocations": 0,
+          "allocatedBytes": 0,
+          "elapsedUs": 345
+        }
+      ]
+    }
+  ]
+}

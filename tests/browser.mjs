@@ -370,6 +370,7 @@ try {
  const resizeViewport=async viewport=>{
   await page.setViewportSize(viewport);
   await page.waitForFunction(()=>Math.abs(document.querySelector('main').getBoundingClientRect().height-innerHeight)<1);
+  await page.evaluate(()=>new Promise(requestAnimationFrame));
  };
  const fullyVisible=async selector=>page.locator(selector).evaluateAll(elements=>elements.every(el=>{
   const r=el.getBoundingClientRect();
@@ -459,30 +460,40 @@ try {
  await page.screenshot({path:new URL('artifacts/keyboard-compact.png',root).pathname});
  // Safari changes its visual viewport without changing CSS media-query height.
  await resizeViewport({width:390,height:844});
- const visualViewport=async(height,offsetTop=0)=>page.evaluate(({height,offsetTop})=>{
-  for(const [name,value] of Object.entries({height,offsetTop})) Object.defineProperty(window.visualViewport,name,{configurable:true,value});
-  window.visualViewport.dispatchEvent(new Event('resize'));
-  window.visualViewport.dispatchEvent(new Event('scroll'));
- },{height,offsetTop});
+ const visualViewport=async(height,offsetTop=0)=>{
+  await page.evaluate(async({height,offsetTop})=>{
+   for(const [name,value] of Object.entries({height,offsetTop})) Object.defineProperty(window.visualViewport,name,{configurable:true,value});
+   window.visualViewport.dispatchEvent(new Event('resize'));
+   window.visualViewport.dispatchEvent(new Event('scroll'));
+   await new Promise(requestAnimationFrame);
+  },{height,offsetTop});
+  await page.waitForFunction(height=>{
+   if(!document.body.classList.contains('native-focused'))return true;
+   const frame=document.querySelector('main');
+   return !document.body.classList.contains('keyboard-opening')&&Math.abs(parseFloat(getComputedStyle(frame).paddingBottom)-Math.max(0,frame.getBoundingClientRect().height-height))<.1;
+  },height);
+ };
  for(const [height,offset] of [[480,0],[320,64],[220,110],[320,0],[480,0]]) {
   await visualViewport(height,offset);
   const main=await page.locator('main').boundingBox();
   assert.equal(main.y,offset,'The app must follow visual viewport panning');
-  assert.equal(main.height,height,'The app must follow visual viewport height independently of innerHeight');
+  assert.equal(main.height,844,'The outer frame must stay full height while the native keyboard changes');
+  assert.equal(await page.locator('main').evaluate(el=>el.getBoundingClientRect().height-parseFloat(getComputedStyle(el).paddingBottom)),height,'The inset must keep typing controls inside the visual viewport');
   assert.equal(await page.locator('#native-input').inputValue(),'Hello!','Viewport changes must not reset the text context');
   assert.equal(await page.locator('#native-tools button, #native-input, .keyboard-toolbar').evaluateAll(elements=>elements.every(el=>{const r=el.getBoundingClientRect(),v=visualViewport;return r.top>=v.offsetTop&&r.bottom<=v.offsetTop+v.height})),true,'Typing controls must fit within a panned visual viewport');
  }
  // A scroll-only viewport change also needs to move the app.
- await page.evaluate(()=>{Object.defineProperty(visualViewport,'offsetTop',{configurable:true,value:48});visualViewport.dispatchEvent(new Event('scroll'));});
+ await page.evaluate(async()=>{Object.defineProperty(visualViewport,'offsetTop',{configurable:true,value:48});visualViewport.dispatchEvent(new Event('scroll'));await new Promise(requestAnimationFrame);});
  assert.equal((await page.locator('main').boundingBox()).y,48);
  await page.locator('#grid-mode').tap();
  await visualViewport(320,0);
- assert.equal(await fullyVisible('#special-keys button, #native-mode, #grid-mode, #keyboard-close'),true,'Grid modifiers must stay reachable while the OS keyboard closes');
+ assert.equal(await fullyVisible('#special-keys button, #native-mode, #grid-mode, #keyboard-close'),true,'Grid controls must fit the restored full app frame');
+ assert.equal((await page.locator('main').boundingBox()).height,844,'Switching to the grid must release keyboard sizing immediately');
  const modifierY=(await page.locator('#key-super').boundingBox()).y;
  await page.locator('#keyboard-panel .sheet-scroll').evaluate(el=>{el.scrollTop=el.scrollHeight;});
  assert.equal((await page.locator('#key-super').boundingBox()).y,modifierY,'Scrolling the grid must keep modifiers anchored');
  await visualViewport(220,0);
- assert.equal(await page.locator('#special-keys button, #native-mode, #grid-mode, #keyboard-close').evaluateAll(elements=>elements.every(el=>{const r=el.getBoundingClientRect();return r.top>=0&&r.bottom<=visualViewport.height})),true,'Grid controls must also fit short landscape keyboard transitions');
+ assert.equal(await fullyVisible('#special-keys button, #native-mode, #grid-mode, #keyboard-close'),true,'Late native keyboard events must not shrink the grid');
  await page.evaluate(()=>{delete visualViewport.height;delete visualViewport.offsetTop;visualViewport.dispatchEvent(new Event('resize'));});
  await resizeViewport({width:390,height:844});
  await page.locator('#keyboard-close').click();

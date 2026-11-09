@@ -148,7 +148,17 @@ See [PROTOCOL.md](PROTOCOL.md) for the version 1 wire format. The input module i
 
 ## Optional installation
 
-Copy `target/release/ghostpad` to `~/.local/bin/ghostpad`. `packaging/ghostpad.service` is an optional user service template; inspect and customize its address/TLS flags before installing. It does not grant input access. No service has been installed or enabled by this project.
+Build and install the standalone executable and a desktop launcher:
+
+```sh
+python3 scripts/install-desktop.py
+```
+
+Open **Ghostpad** from the app launcher (Super+Space on Omarchy). It opens a terminal with the phone pairing QR; keep that window open while using your phone. Ctrl+C or closing the window stops the receiver. The installed `~/.local/bin/ghostpad` works independently of the source folder and needs no Rust or Node at launch. Stop any previously running receiver before opening it. Linux input access from the setup step is still required after reboot.
+
+Keyboard layout logging is disabled by default, including for old `/keyboard-debug` tabs. To deliberately collect measurements, start `ghostpad --keyboard-debug` and open `/keyboard-debug` on the phone.
+
+`packaging/ghostpad.service` is an optional user service template; inspect and customize its address/TLS flags before installing. It does not grant input access. The desktop installer does not install or enable a service.
 
 ## Roadmap
 

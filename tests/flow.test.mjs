@@ -105,6 +105,28 @@ test('delayed, bandwidth-limited delivery avoids seconds of catch-up after finge
  assert(oldLastDelivery-3000>12000);
  console.log(JSON.stringify({simulation:'50 packets/s, 80ms base RTT, intermittent 100ms stalls',samples:750,sent:h.sent.length,maxUnacked,catchUpMs:lastDelivery-2996,unpacedCatchUpMs:oldLastDelivery-2996}));
 });
+for(const rtt of [160,500,900]) test(`slow link with ${rtt}ms RTT and 250ms stalls preserves a complete drag`,()=>{
+ const h=harness();let available=0,unacked=0,maxUnacked=0,held=false,lastDelivery=0,total=0;
+ const delivered=[];
+ h.link.send=bytes=>{
+  h.sent.push({bytes,time:h.clock.now()});unacked++;maxUnacked=Math.max(maxUnacked,unacked);
+  available=Math.max(available,h.clock.now())+40;
+  if(h.sent.length%11===0)available+=250;
+  const arrival=available+rtt/2,code=new Uint8Array(bytes)[3];
+  h.clock.later(()=>{
+   delivered.push(code);lastDelivery=h.clock.now();
+   if(code===5)held=true;else if(code===6)held=false;
+   else if(code===1){assert(held,'All movement must stay inside the drag');total+=new DataView(bytes).getFloat32(4,true);}
+  },arrival-h.clock.now());
+  h.clock.later(()=>{unacked--;h.flow.acknowledge(bytes.slice(0,3));},arrival+rtt/2-h.clock.now());
+ };
+ h.flow.send(command(5));
+ for(let t=0;t<4000;t+=4){h.advance(t);h.flow.send(move(.5));}
+ h.advance(4000);h.flow.send(command(6));h.advance(8000);
+ assert.equal(h.failed,0);assert.equal(total,500);assert.equal(held,false);
+ assert.equal(delivered[0],5);assert.equal(delivered.at(-1),6);
+ assert(maxUnacked<=8);assert(lastDelivery<6000);assert.equal(h.timers.size,0);
+});
 test('a recovered link returns gradually to fast pacing',()=>{
  const h=harness();h.flow.send(command(3));h.advance(200);h.ack(0);assert.equal(h.flow.interval,40);
  for(let i=1;i<=50;i++){h.flow.send(command(3));h.advance(h.clock.now()+2);h.ack(i);}

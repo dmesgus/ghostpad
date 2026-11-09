@@ -1,0 +1,47 @@
+{
+  "baseline": "Working tree captured before this audit, including existing uncommitted UI work",
+  "baselineDirectory": "/tmp/ghostpad-audit-baseline",
+  "sha256": {
+    "src/main.rs": {
+      "before": "cbc342996525942d992014d6ca517bac9c2c8563edabf319cab7e144f82c7ef0",
+      "after": "8d6196623c634fcc3d198ed16a09948733d5b0bc559c965e69ace454dc40f848"
+    },
+    "src/input.rs": {
+      "before": "e92c1c6aef3bcb4c3160d7a950e66c7d50f6007497880eb1920784bdc29b741d",
+      "after": "d2a6cc15e508fe1eb97ff4b5c0da1967d1236c2bb5b0a173758aa72fd3a4451c"
+    },
+    "src/transport.rs": {
+      "before": "1968de9b37e4e56708d7436e1802d6b3b714428921ec3b62bec4c14dc010c222",
+      "after": "70f5b2f7595019932252e90410a3d57bba6b108eef003c3de814f329781a98cc"
+    },
+    "src/wire.rs": {
+      "before": "8c493ff915fc904cc0b6213814fc9bcc309e9566ff9fc339c6c02fbc91247869",
+      "after": "e4cdbdcc6b910731b271b16e40d1ef678498a94c299d09a599af1e959691fcdb"
+    },
+    "src/touchpad.rs": {
+      "before": "dc9e74a95502adb9f988a7ef36a8db4c4b08a487a149594b18417772d142e467",
+      "after": "c4a76b1a13f4e5baef2fdff5fe2f5f00fd7a01a824b9d68081cd3aadaacfde42"
+    },
+    "web/src/app.ts": {
+      "before": "9b17603a436b74664f0cf1d1df5b989e8365ddc79ac383cb67dc6f03ae47ac9c",
+      "after": "7dd8ea54039e89e7c79b2262331eca6ab3d1e74beb0f33376721b78242f4ce8d"
+    },
+    "web/app.js": {
+      "before": "6ab910e840fa18e4eabbb6fc16b0c1823a28a03ed188ca6a734ea84a0e14bcec",
+      "after": "5ef9c45fdb0de97395ce4a811d5eecb9d460a12ed0c626d88e2ff26e2ff1fb78"
+    },
+    "web/style.css": {
+      "before": "97a9cbf999c0ff368604a14aa520b54415ebec6435419c2a3796001531293590",
+      "after": "97a9cbf999c0ff368604a14aa520b54415ebec6435419c2a3796001531293590"
+    },
+    "tests/startup.test.mjs": {
+      "before": "189bdebe71d4eb0d4b5d118c0073e13f9fc1bed5927f1f4cffc738270b464970",
+      "after": "8569113757e8a301837742974274ac8e7460920edde2de78b6f9ca4e4453b0cb"
+    },
+    "tests/flow.test.mjs": {
+      "before": "d11b671a12ec51cebf7390756b02a3446c813b093569490d0c70d65b31e57f88",
+      "after": "25ef109afd90b06495b6b1e420cef80b622e0ca335226161dc4b11a64489d0a7"
+    }
+  },
+  "releaseBinarySha256": "3653b536fb4f3000bf36009337e23f92fc041e64d737cb8361ead587f6339cc1"
+}

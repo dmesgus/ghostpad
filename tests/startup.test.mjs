@@ -4,13 +4,13 @@ import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
 const script = readFileSync(new URL('../web/flow.js',import.meta.url),'utf8').replace('export class InputFlow','class InputFlow') + '\n' + readFileSync(new URL('../web/gestures.js',import.meta.url),'utf8').replace('export class Gestures','class Gestures') + '\n' + readFileSync(new URL('../web/text.js',import.meta.url),'utf8').replaceAll('export function','function') + '\n' + readFileSync(new URL('../web/scroll.js',import.meta.url),'utf8').replace('export class ScrollMomentum','class ScrollMomentum') + '\n' + readFileSync(new URL('../web/app.js',import.meta.url),'utf8').replace("import { Gestures } from './gestures.js';",'').replace("import { ScrollMomentum } from './scroll.js';",'').replace("import { InputFlow } from './flow.js';",'').replace("import { textEdit, normalizeText } from './text.js';",'');
 function start({key='a'.repeat(64),blocked=false,historyBlocked=false,flow=false}={}) {
- const elements=new Map(),timeouts=new Map(),deadlines=new Map(),frames=new Map(),stored=new Map(),sockets=[],fillEvents=[],documentHandlers={},windowHandlers={};let next=1,now=0;
+ const elements=new Map(),timeouts=new Map(),deadlines=new Map(),intervals=new Map(),frames=new Map(),stored=new Map(),sockets=[],fillEvents=[],documentHandlers={},windowHandlers={};let next=1,now=0;
  const element=id=>{if(!elements.has(id))elements.set(id,{textContent:'',value:'',checked:false,hidden:['keyboard-panel','keyboard'].includes(id),open:false,setPointerCapture(){},click(){this.onclick?.({detail:0})},closest(){return null},contains(){return true},focus(){this.handlers.focus?.()},blur(){},querySelectorAll(){return []},getBoundingClientRect(){return {height:200}},style:{setProperty(){},removeProperty(){}},querySelector(){return element('sheet-scroll')},classList:{toggle(){},remove(){},add(){}},handlers:{},attrs:{},addEventListener(type,fn){this.handlers[type]=fn},setAttribute(name,value){this.attrs[name]=value;if(name==='open')this.open=true},removeAttribute(name){if(name==='open')this.open=false}});return elements.get(id)};
- class Socket { static OPEN=1;static CLOSED=3;readyState=0;bufferedAmount=0;sent=[];sentAt=[];protocol=flow?'ghostpad.flow.v1':'';constructor(){if(blocked)throw Error('Blocked');sockets.push(this)}send(value){this.sent.push(value);this.sentAt.push(now)}close(){this.readyState=3} }
- const window={setTimeout(fn,delay=0){const id=next++;timeouts.set(id,fn);deadlines.set(id,now+delay);return id},setInterval(){return next++},addEventListener(type,fn){windowHandlers[type]=fn},dispatchEvent(event){if(event.type==='ghostpad-super-fill')fillEvents.push(event.detail)}};
- const context={document:{body:{classList:{toggle(){},remove(){},add(){}}},querySelector:element,hidden:false,getElementById:element,addEventListener(type,fn){const previous=documentHandlers[type];documentHandlers[type]=(event={})=>{previous?.(event);fn(event)}}},window,localStorage:{getItem:k=>stored.get(k)||null,setItem:(k,v)=>stored.set(k,v)},location:{hash:key?'#key='+key:'',pathname:'/',protocol:'http:',host:'192.168.1.42:8765'},history:{replaceState(){if(historyBlocked)throw Error('Unavailable')}},innerHeight:844,ArrayBuffer,WebSocket:Socket,URLSearchParams,Event,CustomEvent,performance:{now:()=>now},setTimeout:window.setTimeout,clearTimeout:id=>{timeouts.delete(id);deadlines.delete(id)},clearInterval(){},requestAnimationFrame(fn){const id=next++;frames.set(id,fn);return id},cancelAnimationFrame:id=>frames.delete(id)};
+ class Socket { static OPEN=1;static CLOSING=2;static CLOSED=3;readyState=0;bufferedAmount=0;sent=[];sentAt=[];protocol=flow?'ghostpad.flow.v1':'';constructor(){if(blocked)throw Error('Blocked');sockets.push(this)}send(value){this.sent.push(value);this.sentAt.push(now)}close(){this.readyState=3} }
+ const window={setTimeout(fn,delay=0){const id=next++;timeouts.set(id,fn);deadlines.set(id,now+delay);return id},setInterval(fn){const id=next++;intervals.set(id,fn);return id},addEventListener(type,fn){windowHandlers[type]=fn},dispatchEvent(event){if(event.type==='ghostpad-super-fill')fillEvents.push(event.detail)}};
+ const context={document:{body:{classList:{toggle(){},remove(){},add(){}}},querySelector:element,hidden:false,getElementById:element,addEventListener(type,fn){const previous=documentHandlers[type];documentHandlers[type]=(event={})=>{previous?.(event);fn(event)}}},window,localStorage:{getItem:k=>stored.get(k)||null,setItem:(k,v)=>stored.set(k,v)},location:{hash:key?'#key='+key:'',pathname:'/',protocol:'http:',host:'192.168.1.42:8765'},history:{replaceState(){if(historyBlocked)throw Error('Unavailable')}},innerHeight:844,ArrayBuffer,WebSocket:Socket,URLSearchParams,Event,CustomEvent,performance:{now:()=>now},setTimeout:window.setTimeout,clearTimeout:id=>{timeouts.delete(id);deadlines.delete(id)},clearInterval:id=>intervals.delete(id),requestAnimationFrame(fn){const id=next++;frames.set(id,fn);return id},cancelAnimationFrame:id=>frames.delete(id)};
  runInNewContext(script,context);
- return {element,sockets,timeouts,frames,stored,fillEvents,document:context.document,documentHandlers,windowHandlers,setTime(time){now=time},advance(time){
+ return {element,sockets,timeouts,intervals,frames,stored,fillEvents,document:context.document,documentHandlers,windowHandlers,setTime(time){now=time},advance(time){
   for(;;){const due=[...deadlines].filter(([,at])=>at<=time).sort((a,b)=>a[1]-b[1])[0];if(!due)break;
    const [id,at]=due,fn=timeouts.get(id);timeouts.delete(id);deadlines.delete(id);now=at;fn?.();}
   now=time;
@@ -24,6 +24,67 @@ test('missing pairing displays connection guidance',()=>{const s=start({key:''})
 test('settings open and close when native dialog support is missing',()=>{const s=start();s.element('settings-open').onclick();assert.equal(s.element('settings').open,true);s.element('settings-close').onclick();assert.equal(s.element('settings').open,false);});
 
 function ready(s) {const ws=s.sockets[0];ws.readyState=1;ws.onopen();ws.onmessage({data:'ready:linux'});return ws;}
+for(const flow of [false,true]) {
+ test(`transport errors reconnect without waiting for a close event (flow=${flow})`,()=>{
+  const s=start({flow}),ws=ready(s);ws.close=()=>{ws.readyState=2};
+  ws.onerror();assert.equal(s.element('status').textContent,'Reconnecting');
+  assert.equal(s.intervals.size,0);assert.equal(s.timeouts.size,1);
+  s.advance(1000);assert.equal(s.sockets.length,2);
+  const next=s.sockets[1];next.readyState=1;next.onopen();next.onmessage({data:'ready:linux'});
+  ws.onclose();ws.onmessage({data:'unauthorized'});
+  assert.equal(s.element('status').textContent,'Connected');assert.equal(s.intervals.size,1);
+ });
+ for(const connected of [false,true]) test(`suspended ${connected?'controller':'upgrade'} resumes while its old socket is still closing (flow=${flow})`,()=>{
+  const s=start({flow}),ws=connected?ready(s):s.sockets[0];ws.close=()=>{ws.readyState=2};
+  s.document.hidden=true;s.documentHandlers.visibilitychange();
+  assert.equal(s.timeouts.size,0);assert.equal(s.intervals.size,0);
+  s.document.hidden=false;s.documentHandlers.visibilitychange();assert.equal(s.sockets.length,2);
+  ws.onclose();assert.equal(s.timeouts.size,1,'A late close cannot cancel the new connection deadline');
+  const next=s.sockets[1];next.readyState=1;next.onopen();next.onmessage({data:'ready:linux'});
+  assert.equal(s.element('status').textContent,'Connected');assert.equal(s.timeouts.size,0);
+  assert.deepEqual(next.sent,['a'.repeat(64)],'Resuming must not replay old input');
+ });
+}
+test('heartbeat expiry uses elapsed time and reconnects even without a close event',()=>{
+ const s=start(),ws=ready(s);ws.close=()=>{ws.readyState=2};
+ s.setTime(7500);[...s.intervals.values()][0]();
+ assert.equal(ws.readyState,2);assert.equal(s.intervals.size,0);assert.equal(s.timeouts.size,1);
+ s.advance(8500);assert.equal(s.sockets.length,2);
+});
+test('disconnect and reconnect can complete before the old socket closes',()=>{
+ const s=start(),ws=ready(s);ws.close=()=>{ws.readyState=2};
+ s.element('disconnect').onclick();assert.equal(s.timeouts.size,0);assert.equal(s.intervals.size,0);
+ s.element('disconnect').onclick();assert.equal(s.sockets.length,2);
+});
+test('page restoration discards a closing socket without a hidden visibility event',()=>{
+ const s=start({flow:true}),ws=ready(s);ws.close=()=>{ws.readyState=2};
+ s.windowHandlers.pagehide();assert.equal(s.timeouts.size,0);assert.equal(s.intervals.size,0);
+ s.windowHandlers.pageshow();assert.equal(s.sockets.length,2);
+});
+test('recovery events retire a dead controller even if its error and close events were lost',()=>{
+ for(const event of ['online','pageshow','visibilitychange']) for(const state of [2,3]) {
+  const s=start({flow:true}),ws=ready(s);
+  s.element('right-click').onclick();assert.equal(s.timeouts.size,1,'Leave old input awaiting its ACK');
+  ws.readyState=state;
+  if(event==='visibilitychange')s.documentHandlers.visibilitychange();else s.windowHandlers[event]();
+  assert.equal(s.sockets.length,2,`${event} must replace a socket in state ${state}`);
+  assert.equal(s.intervals.size,0,'The old heartbeat must be stopped');
+  const next=s.sockets[1];next.readyState=1;next.onopen();next.onmessage({data:'ready:linux'});
+  assert.equal(s.element('status').textContent,'Connected');assert.equal(s.intervals.size,1);
+  ws.onclose();s.advance(10000);
+  assert.equal(s.sockets.length,2);assert.equal(s.timeouts.size,0);
+  assert.deepEqual(next.sent,['a'.repeat(64)],'Old input and ACK timers must not reach the replacement');
+ }
+});
+test('legacy socket backpressure and send errors also finish the failed connection',()=>{
+ for(const failure of ['buffer','send']) {
+  const s=start(),ws=ready(s);ws.close=()=>{ws.readyState=2};
+  if(failure==='buffer')ws.bufferedAmount=300;else ws.send=()=>{throw Error('Connection lost')};
+  assert.doesNotThrow(()=>s.element('right-click').onclick());
+  assert.equal(s.element('status').textContent,'Reconnecting');assert.equal(s.intervals.size,0);
+  s.advance(1000);assert.equal(s.sockets.length,2);
+ }
+});
 const packets=ws=>ws.sent.filter(v=>typeof v!=='string').map(v=>[...new Uint8Array(v)]);
 function touch(s,type,points,ended=[]) {if(type==='touchstart')s.documentHandlers.touchstart();const point=([clientX,clientY],identifier)=>({identifier,clientX,clientY,target:s.element('pad')});s.element('pad').handlers[type]({preventDefault(){},target:s.element('pad'),touches:points.map(point),changedTouches:ended.map(point)});}
 test('Super hold then two-finger resize sends modifier before button and movement',()=>{const s=start(),ws=ready(s);s.element('mod-super').handlers.pointerdown({preventDefault(){},pointerId:1,pointerType:'touch'});touch(s,'touchstart',[[10,10],[30,10]]);touch(s,'touchmove',[[20,20],[40,20]]);touch(s,'touchend',[]);const p=packets(ws);assert.deepEqual(p.slice(0,2),[[9,227],[12]]);assert.equal(p[2][0],1);assert.deepEqual(p[3],[13]);assert.equal(s.element('mod-super').attrs['aria-pressed'],'true');s.element('mod-super').handlers.pointerup({pointerId:1});assert.deepEqual(packets(ws).at(-1),[10,227]);});
@@ -51,6 +112,30 @@ test('very high sampling stays below the receiver rate limit and preserves dista
  assert(packets(ws).length>=240&&packets(ws).length<=251);
  const times=ws.sentAt.slice(1);for(let i=1;i<times.length;i++)assert(times[i]-times[i-1]>=4);
  touch(s,'touchend',[]);assert(Math.abs(motionTotal(ws)[0]-4200)<.001);assert.equal(s.timeouts.size,0);
+});
+test('large diagonal motion preserves distance and direction before releasing a drag',()=>{
+ for(const flow of [false,true]) {
+  const s=start({flow}),ws=ready(s);s.element('sensitivity').value='3';s.element('sensitivity').oninput();
+  touch(s,'touchstart',[[100,100]]);s.advance(400);
+  touch(s,'touchmove',[[1100,-800]]);touch(s,'touchend',[],[[1150,-850]]);
+  const input=packets(ws).map(p=>flow?p.slice(3):p),motion=input.filter(p=>p[0]===1);
+  assert.equal(input[0][0],5);assert.equal(input.at(-1)[0],6);
+  const total=motion.reduce((sum,p)=>{const v=new DataView(Uint8Array.from(p).buffer);return [sum[0]+v.getFloat32(1,true),sum[1]+v.getFloat32(5,true)]},[0,0]);
+  assert.deepEqual(total,[3150,-2850]);
+  for(const packet of motion) {
+   const view=new DataView(Uint8Array.from(packet).buffer);
+   assert(Math.abs(view.getFloat32(1,true))<=2048);assert(Math.abs(view.getFloat32(5,true))<=2048);
+  }
+  assert.equal(s.element('drag-state').hidden,true);
+ }
+});
+test('coalesced scrolling splits oversized packets without losing either axis',()=>{
+ const s=start(),ws=ready(s);stripTouch(s,'touchstart',[[350,100]]);
+ stripTouch(s,'touchmove',[[450,110]]);
+ for(let i=1;i<=5;i++)stripTouch(s,'touchmove',[[450+i*500,110+i*100]]);
+ stripTouch(s,'touchend',[]);
+ assert.deepEqual(motionTotal(ws,2),[-2600,-510]);
+ assert(packets(ws).every(p=>p[0]===2),'Splitting a scroll must not introduce cursor or button packets');
 });
 test('new strokes start immediately and overdue timers cannot hold fresh movement',()=>{
  const s=start(),ws=ready(s);touch(s,'touchstart',[[100,100]]);touch(s,'touchmove',[[110,100]]);
@@ -310,8 +395,8 @@ for(const stop of ['touchcancel','settings','keyboard','disconnect','socket','pa
  else if(stop==='hidden'){s.document.hidden=true;s.documentHandlers.visibilitychange();}
  else if(stop==='pagehide'||stop==='blur')s.windowHandlers[stop]();
  else s.documentHandlers[stop]();
- assert.equal(s.frames.size,0);
- const before=packets(ws).length;s.frameAt(97);s.frameAt(113);assert.equal(packets(ws).length,before);
+ assert.equal(s.frames.size,stop==='keyboard'?1:0,'Keyboard opening uses one focus-restoration frame; momentum must be canceled');
+ const before=packets(ws).length;s.frameAt(97);s.frameAt(113);assert.equal(packets(ws).length,before);assert.equal(s.frames.size,0);
 });
 test('a stationary release and an interrupted strip gesture never launch momentum',()=>{
  for(const interrupted of [false,true]){

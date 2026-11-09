@@ -10,7 +10,7 @@ use input::{Command, Pointer};
 use std::{
     collections::HashMap,
     fs::{self, OpenOptions},
-    io::{self, Write},
+    io::{self, Read, Write},
     net::TcpListener,
     os::unix::fs::{OpenOptionsExt, PermissionsExt},
     path::PathBuf,
@@ -20,8 +20,10 @@ use std::{
     },
     time::{Duration, Instant},
 };
+use transport::Stream;
 struct State {
     verbose: bool,
+    keyboard_debug: bool,
     token: String,
     origin: String,
     preview: bool,
@@ -89,11 +91,11 @@ fn respond(
 ) -> io::Result<()> {
     let websocket_origin = origin.replacen("http", "ws", 1);
     let asset_policy = &page::page().policy;
-    write!(
-        c,
+    let headers = format!(
         "HTTP/1.1 {status}\r\nContent-Type: {mime}\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\nContent-Security-Policy: default-src 'self'; connect-src 'self' {websocket_origin}; {asset_policy}; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'\r\n\r\n",
         body.len()
-    )?;
+    );
+    c.write_all(headers.as_bytes())?;
     c.write_all(body)
 }
 fn serve(tcp: std::net::TcpStream, state: Arc<State>) -> io::Result<()> {
@@ -104,7 +106,8 @@ fn serve(tcp: std::net::TcpStream, state: Arc<State>) -> io::Result<()> {
     let c = transport::Connection::new(tcp, state.tls.clone())?;
     handle(c, &state)
 }
-fn handle(mut c: impl transport::Stream, state: &State) -> io::Result<()> {
+fn handle(c: impl transport::Stream, state: &State) -> io::Result<()> {
+    let mut c = transport::Buffered::new(c);
     c.begin_read();
     let mut request = Vec::new();
     let mut b = [0];
@@ -162,6 +165,45 @@ fn handle(mut c: impl transport::Stream, state: &State) -> io::Result<()> {
         };
         eprintln!("ghostpad: received GET for {resource}");
     }
+    if let Some(trace) = path.strip_prefix("/keyboard-trace?") {
+        let valid = !trace.is_empty()
+            && trace.len() <= 6000
+            && trace
+                .bytes()
+                .all(|b| b.is_ascii_digit() || matches!(b, b',' | b';' | b'.' | b'-'));
+        if valid && state.keyboard_debug {
+            eprintln!("ghostpad-layout: {trace}");
+        }
+        return respond(
+            &mut c,
+            &state.origin,
+            if valid {
+                "204 No Content"
+            } else {
+                "400 Bad Request"
+            },
+            "text/plain",
+            b"",
+        );
+    }
+    if path == "/keyboard-debug" || path.starts_with("/keyboard-debug?") {
+        // Old diagnostic tabs continue working as the normal app unless explicitly enabled.
+        let body = if state.keyboard_debug {
+            page::page().html.replace(
+                "</body>",
+                "<script src=\"/keyboard-debug.js\"></script></body>",
+            )
+        } else {
+            page::page().html.clone()
+        };
+        return respond(
+            &mut c,
+            &state.origin,
+            "200 OK",
+            "text/html; charset=utf-8",
+            body.as_bytes(),
+        );
+    }
     if path == "/ws" {
         if headers.get("origin") != Some(&state.origin)
             || headers.get("sec-websocket-version").map(String::as_str) != Some("13")
@@ -200,14 +242,15 @@ fn handle(mut c: impl transport::Stream, state: &State) -> io::Result<()> {
         } else {
             ""
         };
-        write!(
-            c,
+        let upgrade = format!(
             "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {}\r\n{protocol}\r\n",
             crypto::accept(key)
-        )?;
+        );
+        c.write_all(upgrade.as_bytes())?;
         c.begin_read();
-        let (op, data) = wire::read_frame(&mut c)?;
-        if op != 1 || !crypto::equal(&data, state.token.as_bytes()) {
+        let mut frame = [0; 125];
+        let (op, data) = wire::read_frame(&mut c, &mut frame)?;
+        if op != 1 || !crypto::equal(data, state.token.as_bytes()) {
             wire::send(&mut c, 1, b"unauthorized")?;
             return Ok(());
         }
@@ -233,7 +276,7 @@ fn handle(mut c: impl transport::Stream, state: &State) -> io::Result<()> {
             let mut sequence = 0u16;
             loop {
                 c.begin_read();
-                let (op, data) = wire::read_frame(&mut c)?;
+                let (op, data) = wire::read_frame(&mut c, &mut frame)?;
                 if window.elapsed() >= Duration::from_secs(1) {
                     window = Instant::now();
                     count = 0;
@@ -247,7 +290,7 @@ fn handle(mut c: impl transport::Stream, state: &State) -> io::Result<()> {
                         wire::send(&mut c, 8, &[])?;
                         break;
                     }
-                    9 => wire::send(&mut c, 10, &data)?,
+                    9 => wire::send(&mut c, 10, data)?,
                     10 => {}
                     2 => {
                         let payload = if flow {
@@ -261,7 +304,7 @@ fn handle(mut c: impl transport::Stream, state: &State) -> io::Result<()> {
                             sequence = next;
                             &data[3..]
                         } else {
-                            &data[..]
+                            data
                         };
                         let command = input::decode(payload)?;
                         if command == Command::Ping {
@@ -286,6 +329,10 @@ fn handle(mut c: impl transport::Stream, state: &State) -> io::Result<()> {
             "/" => ("text/html; charset=utf-8", page::page().html.as_bytes()),
             "/style.css" => ("text/css", include_bytes!("../web/style.css")),
             "/app.js" => ("text/javascript", include_bytes!("../web/app.js")),
+            "/keyboard-debug.js" if state.keyboard_debug => (
+                "text/javascript",
+                include_bytes!("../web/keyboard-debug.js"),
+            ),
             "/gestures.js" => ("text/javascript", include_bytes!("../web/gestures.js")),
             "/flow.js" => ("text/javascript", include_bytes!("../web/flow.js")),
             "/scroll.js" => ("text/javascript", include_bytes!("../web/scroll.js")),
@@ -311,6 +358,7 @@ fn handle(mut c: impl transport::Stream, state: &State) -> io::Result<()> {
 }
 fn run() -> io::Result<()> {
     let mut verbose = false;
+    let mut keyboard_debug = false;
     let mut preview = false;
     let mut rotate = false;
     let mut address = None;
@@ -322,6 +370,7 @@ fn run() -> io::Result<()> {
         match arg.as_str() {
             "--preview" => preview = true,
             "--verbose" => verbose = true,
+            "--keyboard-debug" => keyboard_debug = true,
             "--rotate-key" => rotate = true,
             "--address" => address = Some(args.next().ok_or_else(|| invalid("Missing address"))?),
             "--port" => {
@@ -335,7 +384,7 @@ fn run() -> io::Result<()> {
             "--key" => key = Some(args.next().ok_or_else(|| invalid("Missing key"))?),
             "--help" | "-h" => {
                 println!(
-                    "Ghostpad 0.3.0\n  --verbose        Show connection diagnostics (no pairing secrets)\n  --preview        Connect without controlling the cursor\n  --address IP     LAN IPv4 address for pairing and binding\n  --port PORT      Default: 8765\n  --cert FILE --key FILE   Enable HTTPS (certificate must be trusted on phone)\n  --rotate-key     Revoke all previously paired browsers\n\nStart, scan the terminal QR code with your phone, keep Ghostpad open."
+                    "Ghostpad 0.3.0\n  --verbose        Show connection diagnostics (no pairing secrets)\n  --keyboard-debug Enable /keyboard-debug and numeric layout logging\n  --preview        Connect without controlling the cursor\n  --address IP     LAN IPv4 address for pairing and binding\n  --port PORT      Default: 8765\n  --cert FILE --key FILE   Enable HTTPS (certificate must be trusted on phone)\n  --rotate-key     Revoke all previously paired browsers\n\nStart, scan the terminal QR code with your phone, keep Ghostpad open."
                 );
                 return Ok(());
             }
@@ -404,6 +453,7 @@ fn run() -> io::Result<()> {
     println!("  Page check: {origin}/health (should show ghostpad/1)\n");
     let state = Arc::new(State {
         verbose,
+        keyboard_debug,
         token,
         origin,
         preview,
@@ -441,15 +491,38 @@ mod server_tests {
     struct Memory {
         input: io::Cursor<Vec<u8>>,
         output: Vec<u8>,
+        reads: usize,
+        writes: Vec<usize>,
+        chunk: usize,
+        deadlines: usize,
     }
-    impl transport::Stream for Memory {}
+    impl Memory {
+        fn new(input: Vec<u8>, chunk: usize) -> Self {
+            Self {
+                input: io::Cursor::new(input),
+                output: vec![],
+                reads: 0,
+                writes: vec![],
+                chunk,
+                deadlines: 0,
+            }
+        }
+    }
+    impl transport::Stream for Memory {
+        fn begin_read(&mut self) {
+            self.deadlines += 1;
+        }
+    }
     impl io::Read for Memory {
         fn read(&mut self, b: &mut [u8]) -> io::Result<usize> {
-            self.input.read(b)
+            self.reads += 1;
+            let len = b.len().min(self.chunk);
+            self.input.read(&mut b[..len])
         }
     }
     impl Write for Memory {
         fn write(&mut self, b: &[u8]) -> io::Result<usize> {
+            self.writes.push(b.len());
             self.output.extend_from_slice(b);
             Ok(b.len())
         }
@@ -460,6 +533,7 @@ mod server_tests {
     fn state() -> State {
         State {
             verbose: false,
+            keyboard_debug: false,
             token: "a".repeat(64),
             origin: "http://127.0.0.1:8765".into(),
             preview: true,
@@ -481,10 +555,7 @@ mod server_tests {
         format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1:8765\r\nOrigin: http://127.0.0.1:8765\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n").into_bytes()
     }
     fn run(bytes: Vec<u8>, state: &State) -> (io::Result<()>, Vec<u8>) {
-        let mut m = Memory {
-            input: io::Cursor::new(bytes),
-            output: vec![],
-        };
+        let mut m = Memory::new(bytes, usize::MAX);
         let result = handle(&mut m, state);
         (result, m.output)
     }
@@ -498,6 +569,80 @@ mod server_tests {
         assert!(contains(&out, "200 OK"));
         assert!(contains(&out, "frame-ancestors 'none'"));
         assert!(contains(&out, "Tap to start typing"));
+    }
+    #[test]
+    fn keyboard_diagnostics_are_opt_in_and_only_accept_bounded_numeric_samples() {
+        let (_, normal) = run(request("/"), &state());
+        assert!(!contains(&normal, "/keyboard-debug.js"));
+        let mut enabled = state();
+        enabled.keyboard_debug = true;
+        for path in ["/keyboard-debug", "/keyboard-debug?compare=1"] {
+            let (_, quiet) = run(request(path), &state());
+            assert_eq!(
+                quiet, normal,
+                "Old diagnostic tabs must serve the normal app"
+            );
+            let (_, diagnostic) = run(request(path), &enabled);
+            assert!(contains(&diagnostic, "/keyboard-debug.js"));
+        }
+        let (_, disabled_script) = run(request("/keyboard-debug.js"), &state());
+        assert!(contains(&disabled_script, "404 Not Found"));
+        let (_, enabled_script) = run(request("/keyboard-debug.js"), &enabled);
+        assert!(contains(&enabled_script, "200 OK"));
+        for (path, status) in [
+            (
+                "/keyboard-trace?100,1,844,320,0;120,0,844,320,0",
+                "204 No Content",
+            ),
+            ("/keyboard-trace?text", "400 Bad Request"),
+            ("/keyboard-trace?", "400 Bad Request"),
+        ] {
+            let (_, response) = run(request(path), &state());
+            assert!(contains(&response, status));
+        }
+        let (_, response) = run(
+            request(&format!("/keyboard-trace?{}", "1".repeat(6001))),
+            &state(),
+        );
+        assert!(contains(&response, "400 Bad Request"));
+    }
+    #[test]
+    fn http_headers_are_written_together_before_the_body() {
+        let mut m = Memory::new(request("/health"), usize::MAX);
+        handle(&mut m, &state()).unwrap();
+        assert_eq!(m.reads, 1);
+        assert_eq!(m.writes.len(), 2);
+        assert!(m.output[..m.writes[0]].ends_with(b"\r\n\r\n"));
+        assert_eq!(&m.output[m.writes[0]..], b"ghostpad/1");
+    }
+    #[test]
+    fn buffered_frames_preserve_fragmented_and_batched_input() {
+        let s = state();
+        let mut req = flow_request(&s);
+        for sequence in 1..=200 {
+            req.extend(acknowledged(sequence, &[1, 0, 0, 160, 63, 0, 0, 32, 192]));
+        }
+        req.extend(frame(8, &[]));
+        for chunk in [1, 2, 3, 7, 125, usize::MAX] {
+            let mut m = Memory::new(req.clone(), chunk);
+            handle(&mut m, &s).unwrap();
+            assert!(contains(&m.output, "ready:preview"));
+            assert_eq!(m.deadlines, 203, "Every frame retains its read deadline");
+            assert_eq!(m.writes.len(), 203, "Upgrade, ready, 200 ACKs, close");
+            assert!(m.output[..m.writes[0]].ends_with(b"\r\n\r\n"));
+            let first_ack = m.writes[0] + m.writes[1];
+            for (i, ack) in m.output[first_ack..first_ack + 1000].chunks(5).enumerate() {
+                let sequence = (i as u16 + 1).to_le_bytes();
+                assert_eq!(ack, &[0x82, 3, 17, sequence[0], sequence[1]]);
+            }
+            assert!(!s.pointer.lock().unwrap().is_down());
+            if chunk == usize::MAX {
+                assert!(
+                    m.reads <= 4,
+                    "Available input must not use a read per header byte/frame field"
+                );
+            }
+        }
     }
     #[test]
     fn host_origin_and_duplicate_rejection() {

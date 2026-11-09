@@ -1,0 +1,25 @@
+{
+  "environment": "Chromium mobile emulation, mocked receiver, 695px frame and 392px visual viewport; 400ms observation; native iOS animation and physical frame rate are not measured",
+  "runs": [
+    {
+      "version": "padding",
+      "layouts": 19,
+      "layoutMs": 7.541
+    },
+    {
+      "version": "compositor",
+      "layouts": 3,
+      "layoutMs": 3.0829999999999997
+    },
+    {
+      "version": "compositor",
+      "layouts": 3,
+      "layoutMs": 3.054
+    },
+    {
+      "version": "padding",
+      "layouts": 19,
+      "layoutMs": 11.145
+    }
+  ]
+}

@@ -64,6 +64,32 @@ impl<T: Stream + ?Sized> Stream for &mut T {
         (**self).begin_read();
     }
 }
+// Read whatever is already available in one operation. Writes bypass the read
+// buffer so acknowledgements and releases are never delayed by buffering.
+pub struct Buffered<S: Stream>(io::BufReader<S>);
+impl<S: Stream> Buffered<S> {
+    pub fn new(stream: S) -> Self {
+        Self(io::BufReader::with_capacity(1024, stream))
+    }
+}
+impl<S: Stream> Read for Buffered<S> {
+    fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+        self.0.read(bytes)
+    }
+}
+impl<S: Stream> Write for Buffered<S> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.0.get_mut().write(bytes)
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        self.0.get_mut().flush()
+    }
+}
+impl<S: Stream> Stream for Buffered<S> {
+    fn begin_read(&mut self) {
+        self.0.get_mut().begin_read();
+    }
+}
 pub struct Connection {
     deadline: Instant,
     tcp: TcpStream,
