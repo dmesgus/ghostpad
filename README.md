@@ -4,7 +4,7 @@ A little space. A lot of control.
 
 Ghostpad turns a phone browser into a wireless trackpad for a Linux computer on the same Wi-Fi. A minimal touch surface, a connection indicator, and settings tucked behind it. Local operation, no accounts, no telemetry, no external assets. MIT licensed.
 
-**v0.3 implementation:** Rust receiver, TypeScript interface with CSS/SVG feedback, binary WebSocket input, Linux uinput backend. Designed for Safari on iPhone; Android touch browsers use the same interface. Physical iPhone/Android and compositor testing is still required. Windows/macOS receiver backends are roadmap items, not implemented.
+**v0.3 implementation:** Rust receiver, TypeScript interface with CSS/SVG feedback, binary WebSocket input, Linux uinput backend. iPhone (Safari) and Android (Chrome) use the same pairing QR, gestures, and keyboard interface. Automated Chromium tests cover Android and iPhone browser profiles; physical iPhone/Android and compositor testing is still required. Windows/macOS receiver backends are roadmap items, not implemented.
 
 ## Run
 
@@ -17,15 +17,24 @@ cargo build --release --offline
 ./target/release/ghostpad
 ```
 
-The setup script loads `uinput` and uses `sudo setfacl` to grant only your current user access to `/dev/uinput`. Install the `acl` package if needed. This access expires on reboot or device recreation. Run the receiver as your normal user. No configuration is automatically installed and no existing desktop settings are modified.
+The setup script loads `uinput` and uses `sudo setfacl` to grant only your current user access to `/dev/uinput`. Install the `acl` package if needed. By default this access expires on reboot or device recreation. For desktop launching after reboot, run `./scripts/setup-linux.sh --persistent` once: it installs a udev rule granting the active local desktop session access and a module-load configuration for `uinput`. Run the receiver as your normal user.
 
-Scan the QR with the iPhone camera, then open the link in Safari. Without `qrencode`, open the complete pairing URL printed in the terminal. Both devices must be on the same Wi-Fi, without AP/client isolation. On systems with UFW enabled (including Omarchy), allow the phone explicitly:
+Scan the QR with your phone's camera or QR scanner, then open the link in **Chrome on Android** or **Safari on iPhone**. If the scanner opens an embedded preview, use its Open in browser option, preserving the complete link including `#key=…`. Without `qrencode`, open the complete pairing URL printed in the terminal. Both devices must be on the same Wi-Fi, without AP/client isolation. On systems with UFW enabled (including Omarchy), allow **each phone** explicitly:
 
 ```sh
 ./scripts/allow-phone.sh PHONE_WIFI_IPV4
 ```
 
-Find the phone's IPv4 address in its Wi-Fi settings; this is different from the computer address in the QR. The script allows only that source address, on its directly attached interface, to TCP 8765. It uses sudo, leaves the firewall enabled, and refuses routed/public destinations. Add `--dry-run` to print the command without changing rules. Reconfigure this rule if the phone's address/interface changes; custom receiver ports require a matching rule. Remove an old rule with `sudo ufw status numbered` then `sudo ufw delete NUMBER` after identifying the Ghostpad rule.
+Find the phone's IPv4 address in its Wi-Fi settings; this is different from the computer address in the QR. An existing iPhone rule does **not** allow a new Android phone. The script allows only that source address, on its directly attached interface, to TCP 8765. It uses sudo, leaves the firewall enabled, and refuses routed/public destinations. Add `--dry-run` to print the command without changing rules, or `--port PORT` for a custom receiver port. Reconfigure this rule if the phone's address/interface changes. Remove an old rule with `sudo ufw status numbered` then `sudo ufw delete NUMBER` after identifying the Ghostpad rule.
+
+For multiple phones on trusted private Wi-Fi, you can instead allow the computer's current LAN subnet:
+
+```sh
+./scripts/allow-phone.sh --lan COMPUTER_WIFI_IPV4 --dry-run
+./scripts/allow-phone.sh --lan COMPUTER_WIFI_IPV4
+```
+
+Use the **computer address from the QR** here. This option derives the actual subnet and interface from that local address, restricts the destination to that computer address and the Ghostpad TCP port, and refuses public subnets. All devices on that subnet can reach the pairing page; controlling the computer still requires the QR's pairing secret. Update the rule when the computer changes networks or addresses. The desktop installer also provides this helper as `ghostpad-allow-phone`.
 
  Allow inbound TCP 8765 only on your private LAN if your firewall blocks it. Keep the page open and phone unlocked.
 
@@ -111,6 +120,8 @@ cargo test --offline
 cargo build --offline
 python3 tests/integration.py
 npm run test:browser        # requires Chromium; CHROMIUM_PATH overrides executable
+npm run test:mobile         # real receiver; Android + iPhone Chromium profiles
+python3 tests/firewall.py   # firewall scope checks; no host rules are changed
 cargo build --release --offline
 ```
 
@@ -154,7 +165,7 @@ Build and install the standalone executable and a desktop launcher:
 python3 scripts/install-desktop.py
 ```
 
-Open **Ghostpad** from the app launcher (Super+Space on Omarchy). It opens a terminal with the phone pairing QR; keep that window open while using your phone. Ctrl+C or closing the window stops the receiver. The installed `~/.local/bin/ghostpad` works independently of the source folder and needs no Rust or Node at launch. Stop any previously running receiver before opening it. Linux input access from the setup step is still required after reboot.
+Open **Ghostpad** from the app launcher (Super+Space on Omarchy). It opens a terminal with the phone pairing QR; keep that window open while using your phone. Ctrl+C or closing the original window stops the receiver. Opening Ghostpad again shows the existing HTTP receiver's pairing QR without starting another receiver; press Enter to close that extra pairing window. Stop the original receiver before changing startup options, rotating the pairing key, or relaunching with TLS. The installed `~/.local/bin/ghostpad` works independently of the source folder and needs no Rust or Node at launch. Use `./scripts/setup-linux.sh --persistent` once to keep desktop input access working after reboot, or rerun the temporary setup after each reboot.
 
 Keyboard layout logging is disabled by default, including for old `/keyboard-debug` tabs. To deliberately collect measurements, start `ghostpad --keyboard-debug` and open `/keyboard-debug` on the phone.
 
@@ -174,7 +185,7 @@ Inspired by [NomadPadServer](https://github.com/r1cA18/NomadPadServer), whose na
 
 Stop the existing receiver with Ctrl+C before running a rebuilt binary. Start `./target/release/ghostpad --verbose`, then scan its QR again. Diagnostics log incoming connections, page requests/responses, and controller authentication without logging the pairing credential.
 
-Open the printed `/health` address in Safari and on the computer: it must display `ghostpad/1`. If Safari shows no page and the receiver logs no incoming connection, the request is not reaching Ghostpad: verify the exact HTTP/HTTPS address, Wi-Fi interface, firewall, and network client isolation. Page-rendering changes cannot repair an unreachable LAN address. Do not share the part of the pairing URL after `#`.
+Open the printed `/health` address in Chrome on Android or Safari on iPhone, and on the computer: it must display `ghostpad/1`. If the phone shows no page and the receiver logs no incoming connection, the request is not reaching Ghostpad: verify the exact HTTP/HTTPS address, Wi-Fi interface, firewall, and network client isolation. In particular, a firewall rule for one phone does not allow another phone. Use the single-phone or private-LAN helper above. Page-rendering changes cannot repair an unreachable LAN address. Do not share the part of the pairing URL after `#`.
 
 The page now displays errors if its JavaScript cannot start or a WebSocket connection stalls. Use the visible message to distinguish startup, pairing, and network failures.
 

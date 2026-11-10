@@ -1,0 +1,2 @@
+# Let the active local desktop session create Ghostpad input devices.
+SUBSYSTEM=="misc", KERNEL=="uinput", TAG+="uaccess", OPTIONS+="static_node=uinput"

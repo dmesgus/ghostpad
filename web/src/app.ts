@@ -207,7 +207,7 @@ function connect() {
     ws = new WebSocket(`${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws`, 'ghostpad.flow.v1');
     ws.binaryType = 'arraybuffer';
   }
-  catch { status('Connection blocked', 'Safari could not open the local connection. Open the exact address from the receiver.'); $('reload').hidden = false; return; }
+  catch { status('Connection blocked', 'The browser could not open the local connection. Open the exact QR link in Chrome on Android or Safari on iPhone.'); $('reload').hidden = false; return; }
   socket = ws;
   closeConnection = close;
   connectionDeadline = window.setTimeout(() => {
@@ -257,7 +257,7 @@ function connect() {
     if (socket !== ws) return;
     clearTimeout(connectionDeadline); flow?.stop(); flow = null; ready = false; socket = null; closeConnection = null; lastPing = null; clearInterval(heartbeat); cancel();
     if (shouldRetry && !paused && !document.hidden) {
-      if ($('status').textContent !== 'Computer busy') status('Reconnecting', 'Keep both devices on the same Wi-Fi. Reconnecting automatically.');
+      if ($('status').textContent !== 'Computer busy') status('Reconnecting', 'Keep both devices on the same Wi-Fi and allow this phone through the computer’s firewall. Reconnecting automatically.');
       reconnect = window.setTimeout(connect, retry + Math.random() * 200); retry = Math.min(8000, retry * 1.7);
     }
   }

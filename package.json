@@ -6,7 +6,8 @@
   "scripts": {
     "build:web": "tsc -p tsconfig.json && node scripts/build-ui.mjs",
     "test": "node tests/gestures.test.mjs && node tests/scroll.test.mjs && node tests/startup.test.mjs && node tests/text.test.mjs && node tests/flow.test.mjs",
-    "test:browser": "node tests/browser.mjs && node tests/control-regressions.mjs"
+    "test:browser": "node tests/browser.mjs && node tests/control-regressions.mjs",
+    "test:mobile": "cargo build --offline && node tests/mobile-compatibility.mjs"
   },
   "devDependencies": {
     "playwright-core": "1.64.1",

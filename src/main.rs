@@ -406,6 +406,38 @@ fn run() -> io::Result<()> {
         (None, None) => None,
         _ => return Err(invalid("Supply both --cert and --key")),
     };
+    // Bind before creating input devices or rotating the saved pairing key.
+    // A second launch must never change the credentials of a live receiver.
+    let listener = match TcpListener::bind((ip, port)) {
+        Ok(listener) => listener,
+        Err(error) if error.kind() == io::ErrorKind::AddrInUse => {
+            if tls.is_none()
+                && !rotate
+                && !preview
+                && !keyboard_debug
+                && !verbose
+                && existing_receiver(ip, port)
+            {
+                println!(
+                    "\n  Ghostpad is already running at http://{address}:{port}.\n  Showing its saved pairing QR; the original terminal controls the receiver.\n  Startup options apply only when starting a new receiver.\n"
+                );
+                pairing(&format!("http://{address}:{port}"), &token(false)?);
+                println!(
+                    "  Press Enter to close this pairing window. The receiver will keep running."
+                );
+                let mut line = String::new();
+                io::stdin().read_line(&mut line)?;
+                return Ok(());
+            }
+            return Err(io::Error::new(
+                error.kind(),
+                format!(
+                    "Address {address}:{port} is already in use. Stop the existing receiver before changing its options or rotating its key, or use a different --port."
+                ),
+            ));
+        }
+        Err(error) => return Err(error),
+    };
     let pointer = Pointer::new(preview).map_err(|e| {
         io::Error::other(format!(
             "Cannot create Linux input device: {e}. See README for uinput setup, or use --preview."
@@ -416,7 +448,6 @@ fn run() -> io::Result<()> {
         if tls.is_some() { "https" } else { "http" }
     );
     let token = token(rotate)?;
-    let listener = TcpListener::bind((ip, port))?;
     println!(
         "\n  GHOSTPAD · {}\n",
         if preview {
@@ -430,24 +461,11 @@ fn run() -> io::Result<()> {
             "  Trusted Wi-Fi only: HTTP traffic is not encrypted.\n  Use --cert and --key for TLS.\n"
         );
     }
-    let link = format!("{origin}/#key={token}");
-    // Secrets travel to qrencode over stdin, not process arguments.
-    if let Ok(mut child) = std::process::Command::new("qrencode")
-        .args(["-t", "ANSIUTF8", "-m", "2"])
-        .stdin(std::process::Stdio::piped())
-        .spawn()
-    {
-        if let Some(mut stdin) = child.stdin.take() {
-            let _ = stdin.write_all(link.as_bytes());
-        }
-        let _ = child.wait();
-    }
-    println!(
-        "  Scan with your phone, or open:\n  {link}\n\n  Keep this terminal private. Ctrl+C stops the receiver.\n"
-    );
+    pairing(&origin, &token);
+    println!("  Keep the original receiver terminal open. Ctrl+C stops the receiver.\n");
     if ip.is_loopback() {
         eprintln!(
-            "ghostpad: this address is computer-only. Use --address with your Wi-Fi IPv4 address for an iPhone."
+            "ghostpad: this address is computer-only. Use --address with your Wi-Fi IPv4 address for your phone."
         );
     }
     println!("  Page check: {origin}/health (should show ghostpad/1)\n");
@@ -477,6 +495,59 @@ fn run() -> io::Result<()> {
         });
     }
     Ok(())
+}
+
+fn existing_receiver(ip: std::net::Ipv4Addr, port: u16) -> bool {
+    let probe = || -> io::Result<bool> {
+        let timeout = Duration::from_secs(2);
+        let mut socket = std::net::TcpStream::connect_timeout(&(ip, port).into(), timeout)?;
+        socket.set_read_timeout(Some(timeout))?;
+        socket.set_write_timeout(Some(timeout))?;
+        write!(
+            socket,
+            "GET /health HTTP/1.1\r\nHost: {ip}:{port}\r\nConnection: close\r\n\r\n"
+        )?;
+        let mut response = String::new();
+        socket.take(8192).read_to_string(&mut response)?;
+        Ok(response.starts_with("HTTP/1.1 200 OK\r\n")
+            && response
+                .split_once("\r\n\r\n")
+                .is_some_and(|(_, body)| body == "ghostpad/1"))
+    };
+    probe().unwrap_or(false)
+}
+
+fn pairing(origin: &str, token: &str) {
+    let link = format!("{origin}/#key={token}");
+    // Secrets travel to qrencode over stdin, not process arguments.
+    if let Ok(mut child) = std::process::Command::new("qrencode")
+        .args(["-t", "ANSIUTF8", "-m", "2"])
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+    {
+        if let Some(mut stdin) = child.stdin.take() {
+            let _ = stdin.write_all(link.as_bytes());
+        }
+        let _ = child.wait();
+    }
+    println!(
+        "  Scan with your phone, or open:\n  {link}\n\n  Android: open in Chrome. iPhone: open in Safari.\n  Keep both devices on the same Wi-Fi. Keep this terminal private.\n"
+    );
+    if fs::read_to_string("/etc/ufw/ufw.conf")
+        .is_ok_and(|config| config.lines().any(|line| line.trim() == "ENABLED=yes"))
+    {
+        println!(
+            "  UFW is enabled: every phone needs a matching firewall rule.\n  Allow one phone: ghostpad-allow-phone PHONE_WIFI_IPV4\n  Or allow phones on this private Wi-Fi: ghostpad-allow-phone --lan {}\n  From source, use ./scripts/allow-phone.sh instead of ghostpad-allow-phone.\n  Add --port {} to the helper if using a custom port.\n",
+            origin
+                .split_once("://")
+                .unwrap()
+                .1
+                .split(':')
+                .next()
+                .unwrap(),
+            origin.rsplit_once(':').unwrap().1
+        );
+    }
 }
 fn main() {
     if let Err(e) = run() {

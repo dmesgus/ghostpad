@@ -67,6 +67,23 @@ class Receiver(unittest.TestCase):
   c=http.client.HTTPConnection('127.0.0.1',self.port);c.request('GET','/');r=c.getresponse();self.assertEqual(r.status,200);self.assertIn("frame-ancestors 'none'",r.getheader('Content-Security-Policy'));self.assertIn(b'Tap to start typing',r.read());c.close()
  def test_bad_host(self):
   c=http.client.HTTPConnection('127.0.0.1',self.port);c.request('GET','/',headers={'Host':'evil.example'});self.assertEqual(c.getresponse().status,403);c.close()
+ def test_repeat_launch(self):
+  command=[str(BINARY),'--address','127.0.0.1','--port',str(self.port)]
+  result=subprocess.run(command,env=self.env,input=b'\n',capture_output=True,timeout=5)
+  self.assertEqual(result.returncode,0,result.stderr.decode())
+  self.assertIn(b'Ghostpad is already running',result.stdout)
+  self.assertIn(f'/#key={self.key}'.encode(),result.stdout)
+  for option in ['--rotate-key','--preview','--keyboard-debug']:
+   blocked=subprocess.run([*command,option],env=self.env,input=b'\n',capture_output=True,timeout=5)
+   self.assertNotEqual(blocked.returncode,0)
+  self.assertEqual((pathlib.Path(self.tmp.name)/'ghostpad/pairing-key').read_text(),self.key)
+  with self.ws() as s:self.assertEqual(self.recv(s),b'ready:preview')
+ def test_unrelated_listener_is_not_reused(self):
+  with socket.socket() as listener:
+   listener.bind(('127.0.0.1',0));listener.listen()
+   result=subprocess.run([str(BINARY),'--address','127.0.0.1','--port',str(listener.getsockname()[1])],env=self.env,input=b'\n',capture_output=True,timeout=5)
+   self.assertNotEqual(result.returncode,0)
+   self.assertIn(b'already in use',result.stderr)
  def test_wrong_key(self):
   with self.ws('0'*64) as s:self.assertEqual(self.recv(s),b'unauthorized');self.assertIsNone(self.recv(s))
  def test_origin(self):self.ws(origin='https://evil.example')

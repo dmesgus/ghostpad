@@ -22,6 +22,14 @@ def install(source, destination, mode):
         Path(temporary).unlink(missing_ok=True)
 
 
+def desktop_argument(value):
+    """Quote one Exec argument through desktop-string and Exec decoding."""
+    value = str(value).replace("%", "%%")
+    for character in ("\\", '"', "`", "$"):
+        value = value.replace(character, "\\" + character)
+    return '"' + value.replace("\\", "\\\\") + '"'
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--prefix", type=Path, default=Path.home() / ".local")
@@ -31,13 +39,13 @@ def main():
     binary = prefix / "bin/ghostpad"
     subprocess.run(["cargo", "build", "--release", "--offline"], cwd=root, check=True)
     desktop = (root / "packaging/ghostpad.desktop").read_text()
-    # Desktop Exec has its own quoting rules, independent of shell quoting.
-    executable = str(binary).replace("%", "%%")
-    for character in ("\\", '"', "`", "$"):
-        executable = executable.replace(character, "\\" + character)
-    # Desktop strings decode backslash escapes before Exec argument parsing.
-    executable = executable.replace("\\", "\\\\")
-    desktop = desktop.replace("Exec=ghostpad\n", f'Exec="{executable}"\n', 1)
+    executable = desktop_argument(binary)
+    # Honor the user's configured terminal instead of the launcher's fallback.
+    terminal = shutil.which("xdg-terminal-exec")
+    if terminal:
+        executable = f'{desktop_argument(terminal)} --title=Ghostpad {executable}'
+        desktop = desktop.replace("Terminal=true\n", "Terminal=false\n")
+    desktop = desktop.replace("Exec=ghostpad\n", f"Exec={executable}\n", 1)
     # Exec is absolute, so launchers need no PATH lookup or TryExec check.
     desktop = desktop.replace("TryExec=ghostpad\n", "")
     validator = shutil.which("desktop-file-validate")
@@ -47,6 +55,7 @@ def main():
             candidate.write_text(desktop)
             subprocess.run([validator, str(candidate)], check=True)
     install((root / "target/release/ghostpad").read_bytes(), binary, 0o755)
+    install((root / "scripts/allow-phone.sh").read_bytes(), prefix / "bin/ghostpad-allow-phone", 0o755)
     install((root / "web/icon.svg").read_bytes(),
             prefix / "share/icons/hicolor/scalable/apps/ghostpad.svg", 0o644)
     install(desktop.encode(), prefix / "share/applications/ghostpad.desktop", 0o755)
@@ -54,6 +63,7 @@ def main():
     if updater:
         subprocess.run([updater, str(prefix / "share/applications")], check=True)
     print(f"Installed executable: {binary}")
+    print(f"Firewall helper: {prefix / 'bin/ghostpad-allow-phone'}")
     print("Open Ghostpad from your app launcher to see the phone pairing QR.")
 
 

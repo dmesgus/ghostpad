@@ -9,10 +9,10 @@
   }
   window.addEventListener('ghostpad-started', function () { started = true; });
   window.addEventListener('error', function () {
-    if (!started) fail('Ghostpad could not start in this browser. Reload the page; if it persists, check your Safari version.');
+    if (!started) fail('Ghostpad could not start in this browser. Reload in Chrome on Android or Safari on iPhone; update the browser if this persists.');
   });
   setTimeout(function () {
-    if (!started) fail('The page arrived, but Ghostpad did not start. Reload this page in Safari.');
+    if (!started) fail('The page arrived, but Ghostpad did not start. Reload in Chrome on Android or Safari on iPhone.');
   }, 6000);
   document.getElementById('reload').onclick = function () { window.location.reload(); };
 })();
