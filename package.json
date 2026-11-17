@@ -3,10 +3,15 @@
   "version": "0.3.0",
   "private": true,
   "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "build:web": "tsc -p tsconfig.json && node scripts/build-ui.mjs",
+    "build:icons": "node scripts/build-icons.mjs",
     "test": "node tests/gestures.test.mjs && node tests/scroll.test.mjs && node tests/startup.test.mjs && node tests/text.test.mjs && node tests/flow.test.mjs",
-    "test:browser": "node tests/browser.mjs && node tests/control-regressions.mjs",
+    "test:browser": "cargo build --offline && node tests/browser.mjs && node tests/control-regressions.mjs && node tests/desktop.mjs",
+    "test:desktop": "cargo build --offline && node tests/desktop.mjs",
     "test:mobile": "cargo build --offline && node tests/mobile-compatibility.mjs"
   },
   "devDependencies": {

@@ -5,7 +5,7 @@ Description=Ghostpad local wireless trackpad
 After=network-online.target
 
 [Service]
-ExecStart=%h/.local/bin/ghostpad
+ExecStart=%h/.local/bin/ghostpad --no-pairing-output
 Restart=on-failure
 RestartSec=5
 NoNewPrivileges=true

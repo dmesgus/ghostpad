@@ -2,8 +2,12 @@
 name = "ghostpad"
 version = "0.3.0"
 edition = "2024"
+rust-version = "1.85"
 license = "MIT"
 description = "A quiet, local wireless trackpad for Linux"
+repository = "https://github.com/dmesgus/ghostpad"
+readme = "README.md"
+publish = false
 
 [profile.release]
 lto = true

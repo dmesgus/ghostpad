@@ -1,0 +1,32 @@
+title = "Ghostpad secret scanning"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "ghostpad-pairing-link"
+description = "Ghostpad pairing bearer secret in a URL"
+regex = '''(?i)#key=([a-f0-9]{64})'''
+secretGroup = 1
+[[rules.allowlists]]
+description = "Deliberate non-secret test credentials"
+regexTarget = "secret"
+regexes = ['''^(?:a{64}|0{64}|b{64})$''']
+
+[[rules]]
+id = "ghostpad-saved-key"
+description = "Ghostpad saved or temporary pairing credential"
+path = '''(^|/)(pairing-key|\.pairing-[a-f0-9]+)$'''
+regex = '''(?i)^([a-f0-9]{64})$'''
+secretGroup = 1
+
+[[rules]]
+id = "generic-api-key"
+[[rules.allowlists]]
+description = "Public RFC 6455 WebSocket handshake example nonce, not a bearer key"
+regexTarget = "secret"
+regexes = ['''^dGhlIHNhbXBsZSBub25jZQ(?:==)?(?:\\r\\n)*$''']
+
+[[allowlists]]
+description = "Dependency and build output (release inputs are explicitly allowlisted)"
+paths = ['''(^|/)(node_modules|target|dist|\.git)(/|$)''']

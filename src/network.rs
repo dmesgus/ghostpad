@@ -4,6 +4,17 @@ use std::{
     process::Command,
 };
 
+pub fn validate(ip: Ipv4Addr) -> io::Result<()> {
+    if ip.is_private() || ip.is_loopback() {
+        Ok(())
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Use a private Wi-Fi/LAN IPv4 address (10.x, 172.16–31.x, 192.168.x), or loopback for local testing. Public and wildcard binding are disabled.",
+        ))
+    }
+}
+
 fn candidates(output: &str) -> Vec<(String, Ipv4Addr)> {
     output
         .lines()
@@ -19,7 +30,7 @@ fn candidates(output: &str) -> Vec<(String, Ipv4Addr)> {
                     .join(name)
                     .join("device")
                     .exists();
-            if physical && !ip.is_loopback() && !ip.is_link_local() {
+            if physical && ip.is_private() {
                 Some((name.to_string(), ip))
             } else {
                 None
@@ -75,6 +86,28 @@ pub fn address() -> io::Result<Ipv4Addr> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn binding_stays_on_private_networks_or_loopback() {
+        for value in [
+            "10.0.0.1",
+            "172.16.0.1",
+            "172.31.255.254",
+            "192.168.1.1",
+            "127.0.0.1",
+        ] {
+            assert!(validate(value.parse().unwrap()).is_ok());
+        }
+        for value in [
+            "0.0.0.0",
+            "8.8.8.8",
+            "172.32.0.1",
+            "169.254.1.1",
+            "224.0.0.1",
+            "255.255.255.255",
+        ] {
+            assert!(validate(value.parse().unwrap()).is_err());
+        }
+    }
     #[test]
     fn wifi_wins_over_vpn_and_docker_default_route() {
         let entries = candidates(

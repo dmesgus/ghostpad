@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="430" height="800" viewBox="0 0 430 800">
+<rect width="430" height="800" fill="#fff"/>
+<g font-family="sans-serif" fill="#171717"><text x="20" y="29" font-size="22" font-weight="600">Thumb zones</text><text x="20" y="52" font-size="13" fill="#666">Boundary guide · controls stay invisible in the app</text></g>
+<defs><clipPath id="pad"><rect x="20" y="74" width="390" height="660" rx="32"/></clipPath></defs>
+<g clip-path="url(#pad)"><rect x="20" y="74" width="390" height="660" fill="#e8e8e8"/>
+<rect x="354" y="132" width="56" height="509.6" fill="#d1dce3"/>
+<path d="M20 602 A124.8 66 0 0 1 144.8 668 V734 H20Z M410 641.6 A93.6 46.2 0 0 0 316.4 687.8 V734 H410Z" fill="#efd4d1"/>
+<path d="M20 602 A124.8 66 0 0 1 144.8 668 V734 M410 641.6 A93.6 46.2 0 0 0 316.4 687.8 V734" fill="none" stroke="#d95750" stroke-width="2"/>
+<path d="M215 570 V705 M208 698 L215 705 L222 698" fill="none" stroke="#707070" stroke-width="1.5"/>
+</g>
+<g font-family="sans-serif" text-anchor="middle" fill="#333"><text x="195" y="355" font-size="20">Tracking</text><text x="195" y="380" font-size="13" fill="#666">Open through the bottom center</text><text x="382" y="315" font-size="13" transform="rotate(-90 382 315)">Scroll strip</text><text x="79" y="687" font-size="16">Super</text><text x="363" y="711" font-size="13">Right-click</text><text x="215" y="765" font-size="13" fill="#666">A touch keeps its starting action across the curves.</text></g>
+</svg>

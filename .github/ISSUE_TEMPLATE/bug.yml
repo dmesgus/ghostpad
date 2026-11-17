@@ -1,0 +1,25 @@
+name: Bug report
+description: A reproducible Ghostpad problem
+body:
+  - type: markdown
+    attributes:
+      value: "Keep pairing URLs, QR codes, keys, and private logs out of issues. Report vulnerabilities through Security → Advisories → Report a vulnerability."
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Ghostpad version/commit, Linux distribution and compositor, phone model/OS, browser/version.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps, expected result, and actual result
+      description: Include whether /health opens on the computer and phone if the problem is connecting.
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Redacted diagnostics or screenshots
+      description: Terminal pairing mode prints a secret. Remove the complete key/QR before sharing.

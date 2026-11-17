@@ -3,20 +3,20 @@ mod input;
 mod keys;
 mod network;
 mod page;
+mod pairing;
 mod touchpad;
 mod transport;
 mod wire;
 use input::{Command, Pointer};
+use pairing::token;
 use std::{
     collections::HashMap,
-    fs::{self, OpenOptions},
+    fs,
     io::{self, Read, Write},
     net::TcpListener,
-    os::unix::fs::{OpenOptionsExt, PermissionsExt},
-    path::PathBuf,
     sync::{
-        Arc, Mutex,
-        atomic::{AtomicUsize, Ordering},
+        Arc, Mutex, OnceLock,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -30,6 +30,8 @@ struct State {
     pointer: Mutex<Pointer>,
     clients: AtomicUsize,
     tls: Option<Arc<transport::Tls>>,
+    pairing_qr: OnceLock<Option<Vec<u8>>>,
+    stopping: AtomicBool,
 }
 struct Lease(Arc<State>);
 impl Drop for Lease {
@@ -39,48 +41,6 @@ impl Drop for Lease {
 }
 fn invalid(s: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, s)
-}
-fn token(rotate: bool) -> io::Result<String> {
-    let dir = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".config")
-        })
-        .join("ghostpad");
-    fs::create_dir_all(&dir)?;
-    fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))?;
-    let path = dir.join("pairing-key");
-    if rotate {
-        match fs::remove_file(&path) {
-            Ok(()) => {}
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-            Err(e) => return Err(e),
-        }
-    }
-    match OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(&path)
-    {
-        Ok(mut f) => {
-            let key = crypto::secret()?;
-            f.write_all(key.as_bytes())?;
-            Ok(key)
-        }
-        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
-            let meta = fs::symlink_metadata(&path)?;
-            if !meta.is_file() || meta.permissions().mode() & 0o077 != 0 {
-                return Err(invalid("Pairing key must be a regular file with mode 600"));
-            }
-            let key = fs::read_to_string(path)?;
-            if key.len() != 64 || !key.bytes().all(|b| b.is_ascii_hexdigit()) {
-                return Err(invalid("Invalid saved pairing key; use --rotate-key"));
-            }
-            Ok(key)
-        }
-        Err(e) => Err(e),
-    }
 }
 fn respond(
     c: &mut impl Write,
@@ -136,7 +96,7 @@ fn handle(c: impl transport::Stream, state: &State) -> io::Result<()> {
             return Err(invalid("Duplicate header"));
         }
     }
-    if method != "GET" {
+    if method != "GET" && !(method == "POST" && path == "/api/desktop/stop") {
         return respond(
             &mut c,
             &state.origin,
@@ -154,6 +114,82 @@ fn handle(c: impl transport::Stream, state: &State) -> io::Result<()> {
             "text/plain",
             b"Use the address printed by Ghostpad",
         );
+    }
+    if path.starts_with("/api/desktop/") {
+        let authorized = headers
+            .get("authorization")
+            .and_then(|value| value.strip_prefix("Bearer "))
+            .is_some_and(|key| crypto::equal(key.as_bytes(), state.token.as_bytes()));
+        if !authorized
+            || headers
+                .get("origin")
+                .is_some_and(|value| value != &state.origin)
+        {
+            return respond(
+                &mut c,
+                &state.origin,
+                "403 Forbidden",
+                "text/plain",
+                b"Pairing required",
+            );
+        }
+        match path {
+            "/api/desktop/status" => {
+                let connected = state.pointer.try_lock().is_err();
+                let body = format!(
+                    "{{\"connected\":{connected},\"preview\":{},\"secure\":{}}}",
+                    state.preview,
+                    state.tls.is_some()
+                );
+                return respond(
+                    &mut c,
+                    &state.origin,
+                    "200 OK",
+                    "application/json",
+                    body.as_bytes(),
+                );
+            }
+            "/api/desktop/qr" => {
+                let qr = state
+                    .pairing_qr
+                    .get_or_init(|| pairing_qr(&state.origin, &state.token));
+                return match qr {
+                    Some(svg) => respond(&mut c, &state.origin, "200 OK", "image/svg+xml", svg),
+                    None => respond(&mut c, &state.origin, "503 Service Unavailable", "text/plain", b"Install qrencode to display the QR code. You can still copy the pairing link."),
+                };
+            }
+            "/api/desktop/stop" if method == "POST" => {
+                if headers.get("origin") != Some(&state.origin) {
+                    return respond(
+                        &mut c,
+                        &state.origin,
+                        "403 Forbidden",
+                        "text/plain",
+                        b"Invalid origin",
+                    );
+                }
+                respond(
+                    &mut c,
+                    &state.origin,
+                    "200 OK",
+                    "application/json",
+                    b"{\"stopped\":true}",
+                )?;
+                state.stopping.store(true, Ordering::Release);
+                // Wake the listener so it can exit without an idle polling loop.
+                let _ = std::net::TcpStream::connect(expected_host);
+                return Ok(());
+            }
+            _ => {
+                return respond(
+                    &mut c,
+                    &state.origin,
+                    "404 Not Found",
+                    "text/plain",
+                    b"Not found",
+                );
+            }
+        }
     }
     if state.verbose {
         let resource = match path {
@@ -325,8 +361,17 @@ fn handle(c: impl transport::Stream, state: &State) -> io::Result<()> {
         pointer.release()?;
         result
     } else {
-        let (mime, body): (&str, &[u8]) = match path {
+        // Versioned icon URLs replace stale browser favicons after a rebuild.
+        let asset_path = path.split('?').next().unwrap_or(path);
+        let (mime, body): (&str, &[u8]) = match asset_path {
             "/" => ("text/html; charset=utf-8", page::page().html.as_bytes()),
+            "/desktop" => (
+                "text/html; charset=utf-8",
+                include_bytes!("../web/desktop.html"),
+            ),
+            "/desktop.css" => ("text/css", include_bytes!("../web/desktop.css")),
+            "/desktop.js" => ("text/javascript", include_bytes!("../web/desktop.js")),
+            "/theme.js" => ("text/javascript", include_bytes!("../web/theme.js")),
             "/style.css" => ("text/css", include_bytes!("../web/style.css")),
             "/app.js" => ("text/javascript", include_bytes!("../web/app.js")),
             "/keyboard-debug.js" if state.keyboard_debug => (
@@ -338,6 +383,11 @@ fn handle(c: impl transport::Stream, state: &State) -> io::Result<()> {
             "/scroll.js" => ("text/javascript", include_bytes!("../web/scroll.js")),
             "/text.js" => ("text/javascript", include_bytes!("../web/text.js")),
             "/icon.svg" => ("image/svg+xml", include_bytes!("../web/icon.svg")),
+            "/icon.png" => ("image/png", include_bytes!("../web/icon.png")),
+            "/apple-touch-icon.png" | "/apple-touch-icon-precomposed.png" => {
+                ("image/png", include_bytes!("../web/apple-touch-icon.png"))
+            }
+            "/favicon.ico" => ("image/x-icon", include_bytes!("../web/favicon.ico")),
             "/health" => ("text/plain", b"ghostpad/1"),
             _ => {
                 return respond(
@@ -358,6 +408,8 @@ fn handle(c: impl transport::Stream, state: &State) -> io::Result<()> {
 }
 fn run() -> io::Result<()> {
     let mut verbose = false;
+    let mut desktop = false;
+    let mut no_pairing_output = false;
     let mut keyboard_debug = false;
     let mut preview = false;
     let mut rotate = false;
@@ -369,6 +421,8 @@ fn run() -> io::Result<()> {
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--preview" => preview = true,
+            "--desktop" => desktop = true,
+            "--no-pairing-output" => no_pairing_output = true,
             "--verbose" => verbose = true,
             "--keyboard-debug" => keyboard_debug = true,
             "--rotate-key" => rotate = true,
@@ -382,14 +436,24 @@ fn run() -> io::Result<()> {
             }
             "--cert" => cert = Some(args.next().ok_or_else(|| invalid("Missing cert"))?),
             "--key" => key = Some(args.next().ok_or_else(|| invalid("Missing key"))?),
+            "--version" | "-V" => {
+                println!("Ghostpad {}", env!("CARGO_PKG_VERSION"));
+                return Ok(());
+            }
             "--help" | "-h" => {
                 println!(
-                    "Ghostpad 0.3.0\n  --verbose        Show connection diagnostics (no pairing secrets)\n  --keyboard-debug Enable /keyboard-debug and numeric layout logging\n  --preview        Connect without controlling the cursor\n  --address IP     LAN IPv4 address for pairing and binding\n  --port PORT      Default: 8765\n  --cert FILE --key FILE   Enable HTTPS (certificate must be trusted on phone)\n  --rotate-key     Revoke all previously paired browsers\n\nStart, scan the terminal QR code with your phone, keep Ghostpad open."
+                    "Ghostpad {}\n  --desktop        Open the pairing webpage in your browser\n  --verbose        Show connection diagnostics (no pairing secrets)\n  --keyboard-debug Enable /keyboard-debug and numeric layout logging\n  --preview        Connect without controlling the cursor\n  --address IP     Private LAN IPv4 address (or loopback for local testing)\n  --port PORT      Default: 8765\n  --cert FILE --key FILE   Enable HTTPS (certificate must be trusted on phone)\n  --rotate-key     Revoke all previously paired browsers\n  --no-pairing-output      Keep pairing credentials out of terminal/journal output\n  --version        Print version\n\nStart with --desktop for browser pairing, or scan the terminal QR code.",
+                    env!("CARGO_PKG_VERSION")
                 );
                 return Ok(());
             }
             _ => return Err(invalid(&format!("Unknown option: {arg}"))),
         }
+    }
+    if !preview && pairing::is_root() {
+        return Err(invalid(
+            "Run Ghostpad as your normal desktop user, without sudo. Use ghostpad-setup or make setup-persistent for input access.",
+        ));
     }
     let address = match address {
         Some(address) => address,
@@ -398,8 +462,9 @@ fn run() -> io::Result<()> {
     let ip: std::net::Ipv4Addr = address
         .parse()
         .map_err(|_| invalid("--address must be an IPv4 address on this computer"))?;
-    if port == 0 || ip.is_unspecified() || ip.is_multicast() {
-        return Err(invalid("Use a specific LAN address and nonzero port"));
+    network::validate(ip)?;
+    if port == 0 {
+        return Err(invalid("Use a nonzero port"));
     }
     let tls = match (cert, key) {
         (Some(c), Some(k)) => Some(transport::Tls::new(&c, &k)?),
@@ -418,6 +483,13 @@ fn run() -> io::Result<()> {
                 && !verbose
                 && existing_receiver(ip, port)
             {
+                if desktop {
+                    return open_desktop(&format!("http://{address}:{port}"), &token(false)?);
+                }
+                if no_pairing_output {
+                    println!("Ghostpad is already running at http://{address}:{port}.");
+                    return Ok(());
+                }
                 println!(
                     "\n  Ghostpad is already running at http://{address}:{port}.\n  Showing its saved pairing QR; the original terminal controls the receiver.\n  Startup options apply only when starting a new receiver.\n"
                 );
@@ -461,8 +533,20 @@ fn run() -> io::Result<()> {
             "  Trusted Wi-Fi only: HTTP traffic is not encrypted.\n  Use --cert and --key for TLS.\n"
         );
     }
-    pairing(&origin, &token);
-    println!("  Keep the original receiver terminal open. Ctrl+C stops the receiver.\n");
+    if desktop {
+        open_desktop(&origin, &token)?;
+        println!(
+            "  Pairing is open in your browser. Stop Ghostpad from that page, or press Ctrl+C.\n"
+        );
+    } else if !no_pairing_output {
+        pairing(&origin, &token);
+        println!("  Desktop pairing: {origin}/desktop#key={token}\n");
+        println!("  Keep the original receiver terminal open. Ctrl+C stops the receiver.\n");
+    } else {
+        println!(
+            "  Pairing output hidden. Run ghostpad --desktop with the same address/port to pair.\n"
+        );
+    }
     if ip.is_loopback() {
         eprintln!(
             "ghostpad: this address is computer-only. Use --address with your Wi-Fi IPv4 address for your phone."
@@ -478,9 +562,14 @@ fn run() -> io::Result<()> {
         pointer: Mutex::new(pointer),
         clients: AtomicUsize::new(0),
         tls,
+        pairing_qr: OnceLock::new(),
+        stopping: AtomicBool::new(false),
     });
     for tcp in listener.incoming() {
         let tcp = tcp?;
+        if state.stopping.load(Ordering::Acquire) {
+            break;
+        }
         if verbose {
             eprintln!("ghostpad: incoming connection from {}", tcp.peer_addr()?);
         }
@@ -495,6 +584,37 @@ fn run() -> io::Result<()> {
         });
     }
     Ok(())
+}
+
+fn open_desktop(origin: &str, token: &str) -> io::Result<()> {
+    std::process::Command::new("xdg-open")
+        .arg(format!("{origin}/desktop#key={token}"))
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|error| {
+            io::Error::other(format!(
+                "Cannot open browser: {error}. Open {origin}/desktop#key={token}"
+            ))
+        })?;
+    Ok(())
+}
+
+fn pairing_qr(origin: &str, token: &str) -> Option<Vec<u8>> {
+    let mut child = std::process::Command::new("qrencode")
+        .args(["-t", "SVG", "--inline", "-m", "4", "-l", "M"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .ok()?;
+    let written = child
+        .stdin
+        .take()?
+        .write_all(format!("{origin}/#key={token}").as_bytes());
+    let output = child.wait_with_output().ok()?;
+    (written.is_ok() && output.status.success()).then_some(output.stdout)
 }
 
 fn existing_receiver(ip: std::net::Ipv4Addr, port: u16) -> bool {
@@ -611,6 +731,8 @@ mod server_tests {
             pointer: Mutex::new(Pointer::new(true).unwrap()),
             clients: AtomicUsize::new(0),
             tls: None,
+            pairing_qr: OnceLock::new(),
+            stopping: AtomicBool::new(false),
         }
     }
     fn frame(op: u8, data: &[u8]) -> Vec<u8> {
@@ -640,6 +762,58 @@ mod server_tests {
         assert!(contains(&out, "200 OK"));
         assert!(contains(&out, "frame-ancestors 'none'"));
         assert!(contains(&out, "Tap to start typing"));
+    }
+    #[test]
+    fn desktop_assets_do_not_publish_pairing_credentials() {
+        let s = state();
+        for path in ["/desktop", "/desktop.css", "/desktop.js", "/theme.js"] {
+            let (result, output) = run(request(path), &s);
+            assert!(result.is_ok());
+            assert!(contains(&output, "200 OK"));
+            assert!(contains(&output, "Cache-Control: no-store"));
+            assert!(!contains(&output, &s.token));
+        }
+    }
+    #[test]
+    fn desktop_api_requires_the_pairing_key_and_rejects_foreign_origins() {
+        let s = state();
+        for path in [
+            "/api/desktop/status",
+            "/api/desktop/qr",
+            "/api/desktop/stop",
+        ] {
+            for auth in ["", "Authorization: Bearer wrong\r\n"] {
+                let bytes = String::from_utf8(request(path))
+                    .unwrap()
+                    .replace("\r\n\r\n", &format!("\r\n{auth}\r\n"));
+                let (result, output) = run(bytes.into_bytes(), &s);
+                assert!(result.is_ok());
+                assert!(contains(&output, "403 Forbidden"));
+                assert!(!contains(&output, &s.token));
+            }
+        }
+        let authorized = String::from_utf8(request("/api/desktop/status"))
+            .unwrap()
+            .replace(
+                "\r\n\r\n",
+                &format!("\r\nAuthorization: Bearer {}\r\n\r\n", s.token),
+            );
+        let (_, output) = run(
+            authorized
+                .replace(
+                    "Origin: http://127.0.0.1:8765",
+                    "Origin: https://evil.example",
+                )
+                .into_bytes(),
+            &s,
+        );
+        assert!(contains(&output, "403 Forbidden"));
+        let (_, output) = run(authorized.as_bytes().to_vec(), &s);
+        assert!(contains(&output, "\"connected\":false"));
+        let _phone = s.pointer.lock().unwrap();
+        let (_, output) = run(authorized.into_bytes(), &s);
+        assert!(contains(&output, "\"connected\":true"));
+        assert!(!s.stopping.load(Ordering::Acquire));
     }
     #[test]
     fn keyboard_diagnostics_are_opt_in_and_only_accept_bounded_numeric_samples() {
