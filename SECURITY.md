@@ -12,7 +12,7 @@ The intended environment is your own Linux desktop and phone on a trusted privat
 
 **HTTP is the default and provides no transport encryption or server authentication.** A network attacker able to read or modify traffic can steal the bearer credential, substitute the served application, and control the computer. Host/Origin validation and a URL fragment do not prevent this. A private IP address is not proof of a trusted network. Use trusted HTTPS when you need protection against network interception; do not use unencrypted Ghostpad on public/guest Wi-Fi.
 
-Never forward the port, expose it through a public tunnel, or configure a reverse proxy to publish it. The receiver accepts private RFC 1918 IPv4 or loopback addresses and binds to the selected address only. It rejects public, multicast, link-local, and wildcard binding. Router forwarding can still expose a privately bound service, so this guard is not an internet firewall. IPv6 and public/VPN-only address setups are outside the supported path.
+Never forward the port, expose it through a public tunnel, or configure a reverse proxy to publish it. The receiver accepts private RFC 1918 IPv4 or loopback addresses. Automatic HTTP mode keeps a loopback listener and follows the selected private LAN address as networks change. Use `--address` to limit the receiver to one address. It rejects public, multicast, link-local, and wildcard binding. Router forwarding can still expose a privately bound service. IPv6 and public/VPN-only address setups are outside the supported path.
 
 ## Pairing credentials
 
@@ -20,7 +20,7 @@ Never forward the port, expose it through a public tunnel, or configure a revers
 - The directory is owned by the receiver user with mode 700; new keys have mode 600. Loading rejects directory/file symlinks, wrong ownership, shared permissions, extra hard links, wrong length, and malformed values. Key reads are bounded. Rotation writes/syncs a replacement before atomically replacing the old file.
 - The QR carries the credential in `#key=…`. URL fragments are not sent in HTTP request targets. The browser removes the fragment from its current address and retains the phone's credential in local storage when available. The desktop uses tab-local session storage.
 - The phone authenticates in the first WebSocket message. The desktop's QR/status APIs require a bearer Authorization header; stopping also requires an exact same-origin POST. Public HTML/assets do not contain the pairing secret.
-- The credential is shared across all paired browsers. Only one authenticated phone holds input control at a time. There is no per-device approval, expiry, identity, or individual revocation yet. Anyone possessing the key can connect, see the pairing QR/status, or stop the receiver.
+- The credential is shared across all paired browsers. Anyone possessing the key can connect, take over input control, see the pairing QR/status, or stop the receiver. Tab identities govern reconnection and handoff. Rotate the shared key to revoke access to previous copies.
 
 To revoke **all** old copies, stop the receiver, restart with `ghostpad --desktop --rotate-key`, and rescan on each wanted phone. A second launch cannot rotate the credential of a receiver that still owns that port. **Forget pairing** clears the current browser's copy only. Clear browser site storage if you no longer trust that device.
 
@@ -28,7 +28,7 @@ Do not share pairing screenshots, terminal pairing output, browser storage, QR c
 
 ## HTTPS
 
-Provide a certificate whose issuer is trusted by the phone and whose subject alternative name includes the exact LAN IPv4 address. For example, after obtaining and trusting that certificate:
+Provide a certificate whose issuer is trusted by the phone and whose subject alternative name includes the exact LAN IPv4 address or configured hostname used to open the page. Include both for hostname and IP fallback to work over HTTPS. For example, after obtaining and trusting that certificate:
 
 ```sh
 ghostpad --desktop --address 192.168.1.42 \

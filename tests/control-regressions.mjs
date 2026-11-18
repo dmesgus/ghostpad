@@ -115,6 +115,77 @@ try {
   assert.equal(await availableHeight(),695,'Dismissal must release the inset while Safari still reports 392px');
   await page.setViewportSize({width:390,height:844});
  });
+ await record('Layout viewport resize keeps native controls above the keyboard as metrics catch up',async()=>{
+  assert.match(await page.locator('meta[name="viewport"]').getAttribute('content'),/interactive-widget=resizes-content/);
+  for(const {width,height,visible} of [
+   {width:320,height:640,visible:220}, {width:393,height:851,visible:436},
+   {width:640,height:390,visible:240}, {width:768,height:1024,visible:580},
+  ]){
+   await page.setViewportSize({width,height});
+   await tap('keyboard-toggle');
+   const firstFrame=await page.evaluate(async visible=>{
+    // Replay the window metric changing before the visual viewport and CSS units.
+    window.originalInnerHeight=Object.getOwnPropertyDescriptor(window,'innerHeight');
+    Object.defineProperty(window,'innerHeight',{configurable:true,value:visible});
+    window.dispatchEvent(new Event('resize'));
+    await new Promise(requestAnimationFrame);
+    const controls=[...document.querySelectorAll('#native-tools button, #native-input, .keyboard-toolbar button')];
+    return {
+     layout:Math.round(document.querySelector('main').getBoundingClientRect().height),
+     visual:Math.round(visualViewport.height),
+     controlsFit:controls.every(el=>{
+      const r=el.getBoundingClientRect();
+      return r.top>=0&&r.bottom<=visible&&el.contains(document.elementFromPoint((r.left+r.right)/2,(r.top+r.bottom)/2));
+     }),
+    };
+   },visible);
+   assert.deepEqual(firstFrame,{layout:height,visual:height,controlsFit:true},`${width}×${visible} visible`);
+   await page.setViewportSize({width,height:visible});
+   await page.evaluate(()=>{
+    Object.defineProperty(window,'innerHeight',window.originalInnerHeight);
+    delete window.originalInnerHeight;
+   });
+   assert(Math.abs(await availableHeight()-visible)<.5,'The inset must go away when CSS also resizes');
+   await page.locator('#native-input').fill('Keep typing');
+   await page.setViewportSize({width,height});
+   await page.waitForFunction(()=>!document.body.classList.contains('native-focused'));
+   assert.equal((await state()).focus,'native-input','Dismissing can retain DOM focus');
+   assert.equal(await page.locator('#native-input').inputValue(),'Keep typing');
+   await tap('native-input');
+   assert.equal(await page.locator('body').evaluate(el=>el.classList.contains('native-focused')),true,'Tapping the field must reopen native typing');
+   await tap('keyboard-close');
+  }
+  await page.setViewportSize({width:390,height:844});
+ });
+ await record('Rotating during native typing keeps tracking the visible viewport',async()=>{
+  await page.setViewportSize({width:640,height:390});
+  await tap('keyboard-toggle');
+  await page.setViewportSize({width:640,height:220});
+  await page.waitForFunction(()=>parseFloat(document.querySelector('main').style.getPropertyValue('--view-height'))<221);
+  await page.setViewportSize({width:390,height:430});
+  await visual(380);
+  assert(Math.abs(await availableHeight()-380)<.5,'A wider visible area after rotation must keep adapting to the keyboard');
+  await tap('keyboard-close');
+  await page.setViewportSize({width:390,height:844});
+ });
+ await record('Very short native typing viewports let the accessory panel scroll',async()=>{
+  await tap('keyboard-toggle');await visual(165,90);
+  const panel=page.locator('#keyboard-panel'),lastKey=page.locator('#native-tools button[data-key="79"]');
+  const bounds=await panel.boundingBox();
+  assert(bounds.y>=90&&bounds.y+bounds.height<=255,'The panel must stay within the panned viewport');
+  assert.equal(await page.locator('#native-input').evaluate(el=>document.activeElement===el),true);
+  await page.mouse.move(bounds.x+bounds.width/2,bounds.y+10);
+  await page.mouse.wheel(0,200);
+  await page.waitForFunction(()=>{const panel=document.getElementById('keyboard-panel');return panel.scrollTop+panel.clientHeight>=panel.scrollHeight-1;});
+  assert.equal(await lastKey.evaluate(el=>{
+   const r=el.getBoundingClientRect();
+   return r.height>=44&&r.bottom<=visualViewport.offsetTop+visualViewport.height&&
+    document.elementFromPoint((r.left+r.right)/2,(r.top+r.bottom)/2)===el;
+  }),true,'The last row must scroll above the keyboard and receive taps');
+  const from=packets.length;await lastKey.tap();
+  await page.waitForFunction(()=>document.activeElement.id==='native-input');
+  assert.deepEqual(packets.slice(from).filter(packet=>packet[0]!==8),[[9,79],[10,79]]);
+ });
  await record('Phone keyboard dismissal catches viewport metrics updated after the resize event',async()=>{
   await tap('keyboard-toggle');await tap('native-mode');await visual(320,64);
   await page.locator('#native-input').fill('Keep typing');
@@ -223,7 +294,7 @@ try {
    }
    await Promise.resolve();const immediate=records.length;
    await new Promise(requestAnimationFrame);await Promise.resolve();observer.disconnect();
-   return {immediate,total:records.length,height:main.getBoundingClientRect().height-parseFloat(main.style.paddingBottom)};
+   return {immediate,total:records.length,height:main.getBoundingClientRect().height-parseFloat(getComputedStyle(main).paddingBottom)};
   });
   assert.equal(updates.immediate,0);assert(updates.total<=5,'One layout batch plus two compositor animation parameters');assert.equal(updates.height,320);
   await tap('keyboard-close');

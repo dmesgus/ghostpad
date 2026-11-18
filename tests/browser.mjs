@@ -24,7 +24,7 @@ try {
  });
  await page.routeWebSocket('**/ws', ws=>{
   ws.onMessage(data=>{
-   if (typeof data==='string') {assert.equal(data,'a'.repeat(64));ws.send('ready:preview');}
+   if (typeof data==='string') {assert.match(data,/^a{64}:[a-f0-9]{32}[nr]$/);ws.send('ready:preview');}
    else {recordInput(ws,data,packets);}
   });
  });
@@ -460,6 +460,7 @@ try {
  await page.screenshot({path:new URL('artifacts/keyboard-compact.png',root).pathname});
  // Safari changes its visual viewport without changing CSS media-query height.
  await resizeViewport({width:390,height:844});
+ await page.locator('#native-input').tap();
  const visualViewport=async(height,offsetTop=0)=>{
   await page.evaluate(async({height,offsetTop})=>{
    for(const [name,value] of Object.entries({height,offsetTop})) Object.defineProperty(window.visualViewport,name,{configurable:true,value});

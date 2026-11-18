@@ -39,7 +39,7 @@ When binary releases are available, you can [install an archive without Rust or 
 2. Open Ghostpad on the computer and scan its QR code. Use Safari on iPhone or Chrome on Android. If a scanner opens a preview, choose **Open in browser**.
 3. Keep the phone page open and the phone unlocked. Slide one finger to move; tap to click.
 
-You can also use **Copy pairing link**. Install `qrencode` on the computer to display QR codes. Pairing is remembered across restarts. Only one phone can control the computer at a time.
+You can also use **Copy pairing link**. Install `qrencode` on the computer to display QR codes. Reopen the saved phone link to reconnect. If another phone has control, tap **Use this phone** to switch.
 
 If your firewall blocks the phone, allow that phone's Wi-Fi IPv4 address explicitly:
 
@@ -48,7 +48,7 @@ If your firewall blocks the phone, allow that phone's Wi-Fi IPv4 address explici
 ~/.local/bin/ghostpad-allow-phone PHONE_WIFI_IPV4
 ```
 
-This helper supports UFW and asks for sudo; it keeps the firewall enabled and scopes the rule to the phone and interface. For other firewalls, allow inbound TCP **8765** from your phone on the private interface. See [network troubleshooting](docs/troubleshooting.md).
+This helper supports UFW and asks for sudo. The desktop help also offers a rule scoped to a trusted interface and subnet for using multiple phones or changing IPs. For other firewalls, allow inbound TCP **8765** from your phone on the private interface. See [network troubleshooting](docs/troubleshooting.md).
 
 Closing the computer's pairing tab leaves Ghostpad running. Open Ghostpad again to return to that page; choose **Stop Ghostpad** to exit. A receiver started in a terminal also stops with Ctrl+C. Installing Ghostpad does not enable an automatic background service.
 

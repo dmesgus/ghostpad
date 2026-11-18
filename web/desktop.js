@@ -15,6 +15,7 @@ const stopConfirm = get('stop-confirm');
 const connectedView = get('connected-view');
 const codeToggle = get('code-toggle');
 const retryButton = get('check-again');
+const addressToggle = get('address-toggle');
 const storageKey = 'ghostpad.desktop.key';
 const fragment = new URLSearchParams(location.hash.slice(1)).get('key');
 let key = fragment || '';
@@ -30,6 +31,8 @@ let showCode = false;
 let failures = 0;
 let pollDelay = 2000;
 let suspended = false;
+let lanOrigin = '', advertisedOrigin = '', pairingOrigin = '', pairingLink = '';
+let useIp = false, qrVersion = 0;
 if (location.hash)
 history.replaceState(null, '', location.pathname);
 try {
@@ -41,10 +44,32 @@ key = sessionStorage.getItem(storageKey) || '';
 catch (_a) { }
 if (!/^[a-f0-9]{64}$/i.test(key))
 key = '';
-const pairingLink = `${location.origin}/#key=${key}`;
-get('computer-address').textContent = location.host;
-get('firewall-command').textContent = `ghostpad-allow-phone PHONE_WIFI_IPV4${location.port && location.port !== '8765' ? ` --port ${location.port}` : ''}`;
-linkInput.value = key ? pairingLink : '';
+function updatePairing() {
+const hasFallback = !!lanOrigin && lanOrigin !== advertisedOrigin;
+if (!hasFallback)
+useIp = false;
+addressToggle.hidden = !hasFallback;
+addressToggle.textContent = useIp ? 'Use local hostname' : 'Use IP address';
+const target = useIp ? lanOrigin : advertisedOrigin;
+if (target !== pairingOrigin) {
+pairingOrigin = target;
+pairingLink = key && target ? `${target}/#key=${key}` : '';
+linkInput.value = pairingLink;
+qrVersion++;
+qrLoaded = qrLoading = qrUnavailable = false;
+qrImage.hidden = true;
+qrImage.removeAttribute('src');
+get('manual-copy').hidden = true;
+unavailable('Preparing your code…');
+}
+get('computer-address').textContent = target ? new URL(target).host : '—';
+const ip = lanOrigin ? new URL(lanOrigin) : null;
+get('firewall-command').textContent = ip
+? `ghostpad-allow-phone --lan ${ip.hostname}${ip.port && ip.port !== '8765' ? ` --port ${ip.port}` : ''}`
+: '';
+get('firewall-setup').hidden = !ip || ip.hostname.startsWith('127.');
+copyButton.disabled = !target;
+}
 function renderPairing() {
 const connected = state === 'connected';
 qrArea.hidden = connected && !showCode;
@@ -70,12 +95,15 @@ qrMessage.textContent = message;
 retryButton.hidden = !retry;
 qrArea.setAttribute('aria-busy', 'false');
 }
-async function request(path, method = 'GET') {
+async function request(path, method = 'GET', target = '') {
 const abort = new AbortController();
 const timeout = setTimeout(() => abort.abort(), 4500);
 try {
+const headers = new Headers({ Authorization: `Bearer ${key}` });
+if (target)
+headers.set('X-Ghostpad-Pairing-Origin', target);
 return await fetch(`/api/desktop/${path}`, {
-method, headers: { Authorization: `Bearer ${key}` },
+method, headers,
 cache: 'no-store', credentials: 'omit', signal: abort.signal,
 });
 }
@@ -84,17 +112,20 @@ clearTimeout(timeout);
 }
 }
 async function loadQr() {
-if (qrLoaded || qrLoading || qrUnavailable || stopped)
+if (qrLoaded || qrLoading || qrUnavailable || stopped || !pairingOrigin)
 return;
 qrLoading = true;
+const version = qrVersion;
 try {
-const response = await request('qr');
-if (stopped)
+const response = await request(useIp ? 'qr/ip' : 'qr', 'GET', pairingOrigin);
+if (stopped || version !== qrVersion)
 return;
 if (response.ok) {
 const svg = await response.text();
+if (stopped || version !== qrVersion)
+return;
 qrImage.onload = () => {
-if (stopped)
+if (stopped || version !== qrVersion)
 return;
 qrLoaded = true;
 qrPlaceholder.hidden = true;
@@ -102,7 +133,10 @@ qrImage.hidden = false;
 retryButton.hidden = true;
 qrArea.setAttribute('aria-busy', 'false');
 };
-qrImage.onerror = () => unavailable('Your code couldn’t load. Copy the link below, or try again.', true);
+qrImage.onerror = () => {
+if (!stopped && version === qrVersion)
+unavailable('Your code couldn’t load. Copy the link below, or try again.', true);
+};
 qrImage.src = `data:image/svg+xml;base64,${btoa(svg)}`;
 }
 else if (response.status === 503) {
@@ -113,10 +147,11 @@ else
 throw Error('QR unavailable');
 }
 catch (_a) {
-if (!stopped)
+if (!stopped && version === qrVersion)
 unavailable('Your code couldn’t load. Copy the link below, or try again.', true);
 }
 finally {
+if (version === qrVersion)
 qrLoading = false;
 }
 }
@@ -147,15 +182,25 @@ if (stopped || !navigator.onLine)
 return;
 failures = 0;
 pollDelay = data.connected ? 5000 : 2000;
-status(data.connected ? 'connected' : 'waiting', data.connected ? 'Your phone is connected' : 'Waiting for your phone');
-copyButton.disabled = stopButton.disabled = false;
-get('scan-caption').textContent = 'Open the link in Safari or Chrome.';
+const nextLan = (data.lanOrigin === undefined ? location.origin : data.lanOrigin) || '';
+const nextOrigin = (data.pairingOrigin === undefined ? nextLan : data.pairingOrigin) || '';
+if (nextLan !== lanOrigin || nextOrigin !== advertisedOrigin) {
+lanOrigin = nextLan;
+advertisedOrigin = nextOrigin;
+updatePairing();
+}
+status(data.connected ? 'connected' : 'waiting', data.connected ? 'Your phone is connected' : lanOrigin ? 'Waiting for your phone' : 'Waiting for a private network');
+copyButton.disabled = !pairingOrigin;
+stopButton.disabled = false;
+get('scan-caption').textContent = lanOrigin ? 'Open the link in Safari or Chrome.' : 'The pairing code will appear when the computer joins a private network.';
 get('ready-heading').textContent = data.preview ? 'Just a test run' : 'You’re all set.';
 get('ready-description').textContent = data.preview ? 'Your phone is connected. Cursor control is off in preview mode.' : 'Keep Ghostpad open on your phone while you use it.';
 get('mode-note').hidden = !data.preview;
 get('transport-label').textContent = data.secure ? 'ENCRYPTED · TLS' : 'LOCAL WI-FI';
 get('security-note').textContent = data.secure ? 'This connection is encrypted with TLS.' : 'This connection uses unencrypted HTTP on your local network.';
-if (qrLoaded) {
+if (!lanOrigin)
+unavailable('Connect this computer to the same Wi-Fi or hotspot as your phone.');
+else if (qrLoaded) {
 qrImage.hidden = false;
 qrPlaceholder.hidden = true;
 retryButton.hidden = true;
@@ -183,13 +228,18 @@ clearTimeout(timer);
 if (stopped || !key)
 return;
 status('offline', 'This computer is offline');
-unavailable('Reconnect this computer to Wi-Fi. Your saved pairing will still work.');
+unavailable('Reconnect this computer to Wi-Fi. Ghostpad will check its pairing address when the connection returns.');
 get('scan-caption').textContent = 'We’ll check again when you’re online.';
 copyButton.disabled = stopButton.disabled = true;
 }
 codeToggle.addEventListener('click', () => {
 showCode = !showCode;
 renderPairing();
+});
+addressToggle.addEventListener('click', () => {
+useIp = !useIp;
+updatePairing();
+void loadQr();
 });
 retryButton.addEventListener('click', async () => {
 retryButton.disabled = true;
@@ -206,7 +256,7 @@ retryButton.disabled = false;
 }
 });
 copyButton.addEventListener('click', async () => {
-if (!key || stopped)
+if (!pairingLink || stopped)
 return;
 clearTimeout(copyTimer);
 let copied = false;

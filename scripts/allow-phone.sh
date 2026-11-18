@@ -39,7 +39,7 @@ try:
         subnet = ipaddress.IPv4Network(f'{address}/{info["prefixlen"]}', strict=False)
         if not any(subnet.subnet_of(network) for network in private):
             raise ValueError('The entire LAN subnet must be private.')
-        source, destination = str(subnet), str(address)
+        source = destination = str(subnet)
     else:
         routes = json.loads(subprocess.check_output(['ip', '-j', '-4', 'route', 'get', str(address)], text=True))
         route = routes[0]

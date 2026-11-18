@@ -42,12 +42,15 @@ class Firewall(unittest.TestCase):
             "ufw", "allow", "in", "on", "wlp1s0", "proto", "tcp", "from", "172.20.10.2",
             "to", "any", "port", "8765", "comment", "Ghostpad phone"])
 
-    def test_lan_scope_uses_actual_prefix_interface_destination_and_port(self):
-        result = self.run_helper(["--lan", "172.20.10.4", "--port", "9876"], self.interface())
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(json.loads(self.log.read_text()), [
-            "ufw", "allow", "in", "on", "wlp1s0", "proto", "tcp", "from", "172.20.10.0/28",
-            "to", "172.20.10.4", "port", "9876", "comment", "Ghostpad private LAN"])
+    def test_lan_scope_survives_dhcp_within_the_selected_subnet(self):
+        for address in ("172.20.10.4", "172.20.10.6"):
+            interface = self.interface()
+            interface[0]["addr_info"][0]["local"] = address
+            result = self.run_helper(["--lan", address, "--port", "9876"], interface)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(self.log.read_text()), [
+                "ufw", "allow", "in", "on", "wlp1s0", "proto", "tcp", "from", "172.20.10.0/28",
+                "to", "172.20.10.0/28", "port", "9876", "comment", "Ghostpad private LAN"])
 
     def test_dry_run_never_invokes_sudo(self):
         for args, data in [(["172.20.10.2", "--dry-run"], [{"dev": "wlp1s0"}]),

@@ -238,7 +238,7 @@ main::before {
 #welcome { flex-shrink: 0; text-align: center; padding: 4px 24px 14px; }
 #hint, noscript { font-size: 12px; line-height: 1.5; color: var(--muted); margin: 0 auto; max-width: 360px; }
 body.connected #welcome { display: none; }
-#reload { background: var(--soft); border-radius: 12px; padding: 12px 18px; margin-top: 10px; font-size: 12px; }
+#reload, #take-control { background: var(--soft); border-radius: 12px; padding: 12px 18px; margin-top: 10px; font-size: 12px; }
 .sheet {
   background: var(--background);
   border: 0;
@@ -283,8 +283,14 @@ input[type=checkbox] { accent-color: var(--accent); width: 20px; height: 20px; }
 .actions { display: flex; gap: 8px; }
 .actions button { background: var(--soft); border-radius: 12px; padding: 12px; min-height: 44px; font-size: 12px; flex: 1; }
 /* One mode switch, a scrollable key area, and controls within thumb reach. */
-#keyboard-panel { padding: 10px max(12px, env(safe-area-inset-right)) 8px max(12px, env(safe-area-inset-left)); }
-.keyboard-toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; flex-shrink: 0; }
+#keyboard-panel {
+  flex-shrink: 0;
+  max-height: 100%;
+  padding: max(4px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right)) 4px max(12px, env(safe-area-inset-left));
+}
+body:not(.grid-mode) #keyboard-panel { overflow-y: auto; overscroll-behavior: contain; }
+body:not(.grid-mode) #keyboard-panel .sheet-scroll { flex-shrink: 0; }
+.keyboard-toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: clamp(4px, calc((var(--view-height, 100dvh) - 320px) / 20), 10px); flex-shrink: 0; }
 .keyboard-choice { flex: 1; }
 .keyboard-choice button { min-height: 38px; }
 #keyboard-panel .sheet-scroll { min-height: 0; padding: 0 0 8px; }
@@ -308,25 +314,28 @@ input[type=checkbox] { accent-color: var(--accent); width: 20px; height: 20px; }
 #key-super { touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
 [data-hold] { touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
 .key-row button.held, .modifier-row button.held, #keyboard .key-row button.held { background: var(--accent); color: var(--primary-foreground); border-color: var(--accent); }
-textarea { display: block; width: 100%; height: 56px; resize: none; border: 1px solid var(--border-strong); border-radius: 14px; background: var(--background); padding: 14px 12px; font-size: 16px; line-height: 26px; color: inherit; touch-action: auto; }
+textarea { display: block; width: 100%; height: clamp(44px, calc(44px + (var(--view-height, 100dvh) - 380px) / 10), 56px); resize: none; border: 1px solid var(--border-strong); border-radius: 14px; background: var(--background); padding: 8px 12px; font-size: 16px; line-height: 26px; color: inherit; touch-action: auto; }
 textarea::placeholder { color: var(--muted); }
 textarea:focus { outline: none; border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
 .typing-help { font-size: 11px; line-height: 1.4; color: var(--muted); margin: 8px 2px 0; }
+#native-panel .typing-help { margin-top: 4px; }
 #shortcut-help { min-height: 31px; margin-top: 6px; }
 .native-tools { display: grid; grid-template-columns: repeat(5, minmax(44px, 1fr)); gap: 4px; flex-shrink: 0; margin: 0; }
-.native-tools button { min-width: 44px; font-size: 15px; height: 48px; }
+.native-tools button { min-width: 44px; font-size: 15px; height: clamp(44px, calc(44px + (var(--view-height, 100dvh) - 380px) / 20), 48px); }
 .native-tools button[data-key="44"] { grid-column: span 2; }
 .key-row button[data-key="44"] { flex: 3; }
 #keyboard .key-row button { background: var(--card); font-size: 14px; }
 #keyboard .key-row button:active { background: var(--surface); }
 #keyboard .key-row:first-child { margin-top: 0; }
 #keyboard .key-row:last-child { margin-bottom: 0; }
-body.keyboard-open #keyboard-panel { max-height: none; }
 body.keyboard-open #pad { min-height: 0; --thumb-height: 68px; --right-height: 56px; --orb-bottom: 14px; }
 body.keyboard-open .dock, body.keyboard-open .grabber { display: none; }
 body.keyboard-open #welcome, body.settings-open #welcome { display: none; }
 /* Size continuously as the visual viewport changes; never hide the pad at a threshold. */
-body.keyboard-open:not(.grid-mode) main { padding-bottom: 0; }
+body.keyboard-open:not(.grid-mode) main {
+  padding-bottom: max(0px, calc(100vh - var(--view-height, 100vh)));
+  padding-bottom: max(0px, calc(100dvh - var(--view-height, 100dvh)));
+}
 /* Layout once, then move only compositor layers while the OS keyboard rises. */
 .keyboard-opening #pad { will-change: transform; animation: keyboard-slide .3s ease-out; }
 .keyboard-opening #keyboard-panel { will-change: transform; animation: keyboard-slide .3s ease-out, controls-enter .18s ease-out; }
@@ -337,11 +346,6 @@ body.keyboard-open:not(.grid-mode) main { padding-bottom: 0; }
 }
 @keyframes keyboard-slide { from { transform: translateY(var(--opening-shift)); } to { transform: translateY(0); } }
 @keyframes keyboard-fill { from { transform: scaleY(var(--opening-scale)); } to { transform: scaleY(1); } }
-body.keyboard-open #keyboard-panel { flex-shrink: 0; max-height: 100%; padding-top: max(4px, env(safe-area-inset-top)); padding-bottom: 4px; }
-body.keyboard-open .keyboard-toolbar { margin-bottom: clamp(4px, calc((var(--view-height, 100dvh) - 320px) / 20), 10px); }
-body.keyboard-open #native-panel .typing-help { margin-top: 4px; }
-body.keyboard-open .native-tools button { height: clamp(44px, calc(44px + (var(--view-height, 100dvh) - 380px) / 20), 48px); }
-body.keyboard-open textarea { height: clamp(44px, calc(44px + (var(--view-height, 100dvh) - 380px) / 10), 56px); padding: 8px 12px; }
 @media (max-height: 500px) {
   #pad { min-height: 0; --orb-bottom: 14px; }
   .dock { height: 56px; padding-bottom: 6px; }

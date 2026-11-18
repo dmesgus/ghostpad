@@ -82,13 +82,18 @@ try {
       await page.reload();
       await page.waitForFunction(() => document.getElementById('status').textContent === 'Preview');
       assert.equal(await page.locator('#pad').evaluate(el => el.classList.contains('scroll-left')), true);
-      // A second phone gets a useful busy state, then takes over on disconnect.
+      // A second phone can take over without touching the active controller.
       const second = await context.newPage();
       await second.goto(`${origin}/#key=${key}`);
       await second.waitForFunction(() => document.getElementById('status').textContent === 'Computer busy');
-      await page.locator('#settings-open').tap();
-      await page.locator('#disconnect').tap();
+      await second.getByRole('button', {name:'Use this phone'}).tap();
       await second.waitForFunction(() => document.getElementById('status').textContent === 'Preview');
+      await page.getByRole('button', {name:'Use this phone'}).waitFor();
+      await second.locator('#settings-open').tap();
+      await second.locator('#disconnect').tap();
+      assert.equal(await page.locator('#status').textContent(), 'Computer busy', 'The displaced tab should wait for an explicit tap');
+      await page.getByRole('button', {name:'Use this phone'}).tap();
+      await page.waitForFunction(() => document.getElementById('status').textContent === 'Preview');
       assert.deepEqual(errors, []);
       console.log(`PASS ${profile}: HTTP pairing, gestures, keyboard, saved pairing, controller handoff`);
     } finally { await context.close(); }
