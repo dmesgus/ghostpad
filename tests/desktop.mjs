@@ -92,7 +92,7 @@ try {
   await page.keyboard.press('Escape');
   assert.equal(await page.evaluate(() => document.activeElement.id), 'guide-open');
   await page.locator('#connection-help').evaluate(el => { el.open = true; });
-  assert.match(await page.locator('#firewall-command').innerText(), new RegExp(`--port ${port}`));
+  assert(await page.locator('#firewall-setup').isHidden(), 'Loopback pairing needs no LAN firewall rule');
   await page.locator('#connection-help').evaluate(el => { el.open = false; });
   // Exercise HTTP clipboard fallback even though localhost is a secure context.
   await page.evaluate(() => {

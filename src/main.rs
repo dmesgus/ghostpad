@@ -13,9 +13,9 @@ use std::{
     collections::HashMap,
     fs,
     io::{self, Read, Write},
-    net::TcpListener,
+    net::{Ipv4Addr, Shutdown, TcpListener, TcpStream},
     sync::{
-        Arc, Mutex, OnceLock,
+        Arc, Mutex, OnceLock, RwLock,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
@@ -28,10 +28,57 @@ struct State {
     origin: String,
     preview: bool,
     pointer: Mutex<Pointer>,
+    controller: Mutex<Controller>,
     clients: AtomicUsize,
     tls: Option<Arc<transport::Tls>>,
-    pairing_qr: OnceLock<Option<Vec<u8>>>,
+    pairing: RwLock<Option<Arc<PairingAddress>>>,
     stopping: AtomicBool,
+}
+struct PairingAddress {
+    ip: String,
+    hostname: Option<String>,
+    qr: OnceLock<Option<Vec<u8>>>,
+    ip_qr: OnceLock<Option<Vec<u8>>>,
+}
+impl PairingAddress {
+    fn new(ip: Ipv4Addr, port: u16, secure: bool, hostname: Option<&str>) -> Self {
+        let scheme = if secure { "https" } else { "http" };
+        Self {
+            ip: format!("{scheme}://{ip}:{port}"),
+            hostname: hostname.map(|name| format!("{scheme}://{name}:{port}")),
+            qr: OnceLock::new(),
+            ip_qr: OnceLock::new(),
+        }
+    }
+
+    fn origin(&self) -> &str {
+        self.hostname.as_deref().unwrap_or(&self.ip)
+    }
+}
+#[derive(Default)]
+struct Controller {
+    // Keep the last tab identity so a displaced tab cannot reconnect and take
+    // control back during a temporary gap in the new controller's connection.
+    id: Option<[u8; 32]>,
+    socket: Option<Arc<TcpStream>>,
+}
+fn session_auth(data: &[u8], key: &[u8], session: bool) -> Option<(Option<[u8; 32]>, u8)> {
+    if !session {
+        return crypto::equal(data, key).then_some((None, b'n'));
+    }
+    let (mode, credentials) = data.split_last()?;
+    let (key_and_separator, id) = credentials.split_last_chunk::<32>()?;
+    let (separator, candidate) = key_and_separator.split_last()?;
+    if *separator != b':'
+        || !matches!(mode, b'n' | b'r' | b't')
+        || !crypto::equal(candidate, key)
+        || !id
+            .iter()
+            .all(|&b| b.is_ascii_digit() || matches!(b, b'a'..=b'f'))
+    {
+        return None;
+    }
+    Some((Some(*id), *mode))
 }
 struct Lease(Arc<State>);
 impl Drop for Lease {
@@ -58,15 +105,29 @@ fn respond(
     c.write_all(headers.as_bytes())?;
     c.write_all(body)
 }
-fn serve(tcp: std::net::TcpStream, state: Arc<State>) -> io::Result<()> {
+fn serve(
+    tcp: TcpStream,
+    state: Arc<State>,
+    address: Option<Arc<PairingAddress>>,
+) -> io::Result<()> {
     let _lease = Lease(state.clone());
     tcp.set_nodelay(true)?;
     tcp.set_read_timeout(Some(Duration::from_secs(5)))?;
     tcp.set_write_timeout(Some(Duration::from_secs(3)))?;
     let c = transport::Connection::new(tcp, state.tls.clone())?;
-    handle(c, &state)
+    let (origin, hostname) = address
+        .as_ref()
+        .map_or((state.origin.as_str(), None), |address| {
+            (address.ip.as_str(), address.hostname.as_deref())
+        });
+    handle(c, &state, origin, hostname)
 }
-fn handle(c: impl transport::Stream, state: &State) -> io::Result<()> {
+fn handle(
+    c: impl transport::Stream,
+    state: &State,
+    ip_origin: &str,
+    hostname: Option<&str>,
+) -> io::Result<()> {
     let mut c = transport::Buffered::new(c);
     c.begin_read();
     let mut request = Vec::new();
@@ -99,35 +160,37 @@ fn handle(c: impl transport::Stream, state: &State) -> io::Result<()> {
     if method != "GET" && !(method == "POST" && path == "/api/desktop/stop") {
         return respond(
             &mut c,
-            &state.origin,
+            ip_origin,
             "405 Method Not Allowed",
             "text/plain",
             b"GET only",
         );
     }
-    let expected_host = state.origin.split_once("://").unwrap().1;
-    if headers.get("host").map(String::as_str) != Some(expected_host) {
+    let host = headers.get("host").map(String::as_str);
+    let origin = if host == ip_origin.split_once("://").map(|(_, host)| host) {
+        ip_origin
+    } else if let Some(name) =
+        hostname.filter(|name| host == name.split_once("://").map(|(_, host)| host))
+    {
+        name
+    } else {
         return respond(
             &mut c,
-            &state.origin,
+            ip_origin,
             "403 Forbidden",
             "text/plain",
             b"Use the address printed by Ghostpad",
         );
-    }
+    };
     if path.starts_with("/api/desktop/") {
         let authorized = headers
             .get("authorization")
             .and_then(|value| value.strip_prefix("Bearer "))
             .is_some_and(|key| crypto::equal(key.as_bytes(), state.token.as_bytes()));
-        if !authorized
-            || headers
-                .get("origin")
-                .is_some_and(|value| value != &state.origin)
-        {
+        if !authorized || headers.get("origin").is_some_and(|value| value != origin) {
             return respond(
                 &mut c,
-                &state.origin,
+                origin,
                 "403 Forbidden",
                 "text/plain",
                 b"Pairing required",
@@ -136,33 +199,69 @@ fn handle(c: impl transport::Stream, state: &State) -> io::Result<()> {
         match path {
             "/api/desktop/status" => {
                 let connected = state.pointer.try_lock().is_err();
+                let pairing = state.pairing.read().unwrap();
+                let (lan_origin, pairing_origin) = pairing.as_ref().map_or_else(
+                    || ("null".to_owned(), "null".to_owned()),
+                    |address| {
+                        (
+                            format!("{:?}", address.ip),
+                            format!("{:?}", address.origin()),
+                        )
+                    },
+                );
                 let body = format!(
-                    "{{\"connected\":{connected},\"preview\":{},\"secure\":{}}}",
+                    "{{\"connected\":{connected},\"preview\":{},\"secure\":{},\"lanOrigin\":{lan_origin},\"pairingOrigin\":{pairing_origin}}}",
                     state.preview,
                     state.tls.is_some()
                 );
+                drop(pairing);
                 return respond(
                     &mut c,
-                    &state.origin,
+                    origin,
                     "200 OK",
                     "application/json",
                     body.as_bytes(),
                 );
             }
-            "/api/desktop/qr" => {
-                let qr = state
-                    .pairing_qr
-                    .get_or_init(|| pairing_qr(&state.origin, &state.token));
+            "/api/desktop/qr" | "/api/desktop/qr/ip" => {
+                let address = state.pairing.read().unwrap().clone();
+                let Some(address) = address else {
+                    return respond(
+                        &mut c,
+                        origin,
+                        "409 Conflict",
+                        "text/plain",
+                        b"Waiting for a LAN address.",
+                    );
+                };
+                let (target, cache) = if path.ends_with("/ip") && address.hostname.is_some() {
+                    (address.ip.as_str(), &address.ip_qr)
+                } else {
+                    (address.origin(), &address.qr)
+                };
+                if headers
+                    .get("x-ghostpad-pairing-origin")
+                    .is_some_and(|value| value != target)
+                {
+                    return respond(
+                        &mut c,
+                        origin,
+                        "409 Conflict",
+                        "text/plain",
+                        b"The pairing address changed.",
+                    );
+                }
+                let qr = cache.get_or_init(|| pairing_qr(target, &state.token));
                 return match qr {
-                    Some(svg) => respond(&mut c, &state.origin, "200 OK", "image/svg+xml", svg),
-                    None => respond(&mut c, &state.origin, "503 Service Unavailable", "text/plain", b"Install qrencode to display the QR code. You can still copy the pairing link."),
+                    Some(svg) => respond(&mut c, origin, "200 OK", "image/svg+xml", svg),
+                    None => respond(&mut c, origin, "503 Service Unavailable", "text/plain", b"Install qrencode to display the QR code. You can still copy the pairing link."),
                 };
             }
             "/api/desktop/stop" if method == "POST" => {
-                if headers.get("origin") != Some(&state.origin) {
+                if headers.get("origin").map(String::as_str) != Some(origin) {
                     return respond(
                         &mut c,
-                        &state.origin,
+                        origin,
                         "403 Forbidden",
                         "text/plain",
                         b"Invalid origin",
@@ -170,24 +269,18 @@ fn handle(c: impl transport::Stream, state: &State) -> io::Result<()> {
                 }
                 respond(
                     &mut c,
-                    &state.origin,
+                    origin,
                     "200 OK",
                     "application/json",
                     b"{\"stopped\":true}",
                 )?;
                 state.stopping.store(true, Ordering::Release);
                 // Wake the listener so it can exit without an idle polling loop.
-                let _ = std::net::TcpStream::connect(expected_host);
+                let _ = TcpStream::connect(state.origin.split_once("://").unwrap().1);
                 return Ok(());
             }
             _ => {
-                return respond(
-                    &mut c,
-                    &state.origin,
-                    "404 Not Found",
-                    "text/plain",
-                    b"Not found",
-                );
+                return respond(&mut c, origin, "404 Not Found", "text/plain", b"Not found");
             }
         }
     }
@@ -212,7 +305,7 @@ fn handle(c: impl transport::Stream, state: &State) -> io::Result<()> {
         }
         return respond(
             &mut c,
-            &state.origin,
+            origin,
             if valid {
                 "204 No Content"
             } else {
@@ -234,14 +327,14 @@ fn handle(c: impl transport::Stream, state: &State) -> io::Result<()> {
         };
         return respond(
             &mut c,
-            &state.origin,
+            origin,
             "200 OK",
             "text/html; charset=utf-8",
             body.as_bytes(),
         );
     }
     if path == "/ws" {
-        if headers.get("origin") != Some(&state.origin)
+        if headers.get("origin").map(String::as_str) != Some(origin)
             || headers.get("sec-websocket-version").map(String::as_str) != Some("13")
             || !headers
                 .get("upgrade")
@@ -253,7 +346,7 @@ fn handle(c: impl transport::Stream, state: &State) -> io::Result<()> {
         {
             return respond(
                 &mut c,
-                &state.origin,
+                origin,
                 "403 Forbidden",
                 "text/plain",
                 b"Invalid WebSocket origin or upgrade",
@@ -270,10 +363,15 @@ fn handle(c: impl transport::Stream, state: &State) -> io::Result<()> {
                         .all(|b| b.is_ascii_alphanumeric() || b == b'+' || b == b'/')
             })
             .ok_or_else(|| invalid("Invalid WebSocket key"))?;
-        let flow = headers
+        let offers = headers
             .get("sec-websocket-protocol")
-            .is_some_and(|v| v.split(',').any(|p| p.trim() == "ghostpad.flow.v1"));
-        let protocol = if flow {
+            .into_iter()
+            .flat_map(|value| value.split(',').map(str::trim));
+        let session = offers.clone().any(|p| p == "ghostpad.session.v1");
+        let flow = session || offers.clone().any(|p| p == "ghostpad.flow.v1");
+        let protocol = if session {
+            "Sec-WebSocket-Protocol: ghostpad.session.v1\r\n"
+        } else if flow {
             "Sec-WebSocket-Protocol: ghostpad.flow.v1\r\n"
         } else {
             ""
@@ -286,27 +384,56 @@ fn handle(c: impl transport::Stream, state: &State) -> io::Result<()> {
         c.begin_read();
         let mut frame = [0; 125];
         let (op, data) = wire::read_frame(&mut c, &mut frame)?;
-        if op != 1 || !crypto::equal(data, state.token.as_bytes()) {
+        let Some((id, mode)) = (op == 1)
+            .then(|| session_auth(data, state.token.as_bytes(), session))
+            .flatten()
+        else {
             wire::send(&mut c, 1, b"unauthorized")?;
             return Ok(());
-        }
-        let Ok(mut pointer) = state.pointer.try_lock() else {
-            wire::send(&mut c, 1, b"busy")?;
-            return Ok(());
         };
-        wire::send(
-            &mut c,
-            1,
-            if state.preview {
-                b"ready:preview"
-            } else {
-                b"ready:linux"
-            },
-        )?;
-        if state.verbose {
-            eprintln!("ghostpad: phone authenticated; controller ready");
-        }
+        let (mut pointer, socket) = {
+            // Serialize admission only. The input loop still owns the pointer
+            // for the whole session and never consults the controller lock.
+            let mut active = state.controller.lock().unwrap();
+            let same_tab = id.is_some() && id == active.id;
+            let active_socket = active.socket.as_ref();
+            let pointer = state.pointer.try_lock();
+            if (mode == b'r' && active.id.is_some() && !same_tab)
+                || (pointer.is_err() && (active_socket.is_none() || !(same_tab || mode == b't')))
+            {
+                drop(pointer);
+                drop(active);
+                wire::send(&mut c, 1, b"busy")?;
+                return Ok(());
+            }
+            let socket = c.controller_socket()?.map(Arc::new);
+            let pointer = match pointer {
+                Ok(pointer) => pointer,
+                Err(_) => {
+                    let _ = active_socket.unwrap().shutdown(Shutdown::Both);
+                    // The old worker releases held input before yielding the pointer.
+                    state.pointer.lock().unwrap()
+                }
+            };
+            *active = Controller {
+                id,
+                socket: socket.clone(),
+            };
+            (pointer, socket)
+        };
         let result = (|| {
+            wire::send(
+                &mut c,
+                1,
+                if state.preview {
+                    b"ready:preview"
+                } else {
+                    b"ready:linux"
+                },
+            )?;
+            if state.verbose {
+                eprintln!("ghostpad: phone authenticated; controller ready");
+            }
             let mut window = Instant::now();
             let mut count = 0;
             let mut sequence = 0u16;
@@ -358,7 +485,19 @@ fn handle(c: impl transport::Stream, state: &State) -> io::Result<()> {
             }
             Ok(())
         })();
-        pointer.release()?;
+        let released = pointer.release();
+        drop(pointer);
+        if let Some(socket) = socket {
+            let mut active = state.controller.lock().unwrap();
+            if active
+                .socket
+                .as_ref()
+                .is_some_and(|other| Arc::ptr_eq(other, &socket))
+            {
+                active.socket = None;
+            }
+        }
+        released?;
         result
     } else {
         // Versioned icon URLs replace stale browser favicons after a rebuild.
@@ -390,16 +529,10 @@ fn handle(c: impl transport::Stream, state: &State) -> io::Result<()> {
             "/favicon.ico" => ("image/x-icon", include_bytes!("../web/favicon.ico")),
             "/health" => ("text/plain", b"ghostpad/1"),
             _ => {
-                return respond(
-                    &mut c,
-                    &state.origin,
-                    "404 Not Found",
-                    "text/plain",
-                    b"Not found",
-                );
+                return respond(&mut c, origin, "404 Not Found", "text/plain", b"Not found");
             }
         };
-        respond(&mut c, &state.origin, "200 OK", mime, body)?;
+        respond(&mut c, origin, "200 OK", mime, body)?;
         if state.verbose {
             eprintln!("ghostpad: HTTP response sent ({} bytes)", body.len());
         }
@@ -414,6 +547,7 @@ fn run() -> io::Result<()> {
     let mut preview = false;
     let mut rotate = false;
     let mut address = None;
+    let mut hostname = None;
     let mut port = 8765u16;
     let mut cert = None;
     let mut key = None;
@@ -427,6 +561,10 @@ fn run() -> io::Result<()> {
             "--keyboard-debug" => keyboard_debug = true,
             "--rotate-key" => rotate = true,
             "--address" => address = Some(args.next().ok_or_else(|| invalid("Missing address"))?),
+            "--hostname" => {
+                let value = args.next().ok_or_else(|| invalid("Missing hostname"))?;
+                hostname = Some(network::local_hostname(&value)?);
+            }
             "--port" => {
                 port = args
                     .next()
@@ -442,7 +580,7 @@ fn run() -> io::Result<()> {
             }
             "--help" | "-h" => {
                 println!(
-                    "Ghostpad {}\n  --desktop        Open the pairing webpage in your browser\n  --verbose        Show connection diagnostics (no pairing secrets)\n  --keyboard-debug Enable /keyboard-debug and numeric layout logging\n  --preview        Connect without controlling the cursor\n  --address IP     Private LAN IPv4 address (or loopback for local testing)\n  --port PORT      Default: 8765\n  --cert FILE --key FILE   Enable HTTPS (certificate must be trusted on phone)\n  --rotate-key     Revoke all previously paired browsers\n  --no-pairing-output      Keep pairing credentials out of terminal/journal output\n  --version        Print version\n\nStart with --desktop for browser pairing, or scan the terminal QR code.",
+                    "Ghostpad {}\n  --desktop        Open the pairing webpage in your browser\n  --verbose        Show connection diagnostics (no pairing secrets)\n  --keyboard-debug Enable /keyboard-debug and numeric layout logging\n  --preview        Connect without controlling the cursor\n  --address IP     Pin to one private LAN IPv4 address (or loopback for testing)\n  --hostname NAME  Pair with an existing .local hostname instead of the IP\n  --port PORT      Default: 8765\n  --cert FILE --key FILE   Enable HTTPS (certificate must be trusted on phone)\n  --rotate-key     Revoke all previously paired browsers\n  --no-pairing-output      Keep pairing credentials out of terminal/journal output\n  --version        Print version\n\nStart with --desktop for browser pairing, or scan the terminal QR code.",
                     env!("CARGO_PKG_VERSION")
                 );
                 return Ok(());
@@ -455,14 +593,6 @@ fn run() -> io::Result<()> {
             "Run Ghostpad as your normal desktop user, without sudo. Use ghostpad-setup or make setup-persistent for input access.",
         ));
     }
-    let address = match address {
-        Some(address) => address,
-        None => network::address()?.to_string(),
-    };
-    let ip: std::net::Ipv4Addr = address
-        .parse()
-        .map_err(|_| invalid("--address must be an IPv4 address on this computer"))?;
-    network::validate(ip)?;
     if port == 0 {
         return Err(invalid("Use a nonzero port"));
     }
@@ -471,55 +601,78 @@ fn run() -> io::Result<()> {
         (None, None) => None,
         _ => return Err(invalid("Supply both --cert and --key")),
     };
+    let mut monitor = if address.is_none() && tls.is_none() {
+        match network::Monitor::new() {
+            Ok(monitor) => Some(monitor),
+            Err(error) => {
+                eprintln!("ghostpad: cannot watch for network changes: {error}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let automatic = monitor.is_some();
+    let ip: Ipv4Addr = match &address {
+        Some(address) => address
+            .parse()
+            .map_err(|_| invalid("--address must be an IPv4 address on this computer"))?,
+        None if automatic => Ipv4Addr::LOCALHOST,
+        None => network::address()?,
+    };
+    network::validate(ip)?;
     // Bind before creating input devices or rotating the saved pairing key.
     // A second launch must never change the credentials of a live receiver.
+    let can_reopen =
+        tls.is_none() && !rotate && !preview && !keyboard_debug && !verbose && hostname.is_none();
     let listener = match TcpListener::bind((ip, port)) {
         Ok(listener) => listener,
         Err(error) if error.kind() == io::ErrorKind::AddrInUse => {
-            if tls.is_none()
-                && !rotate
-                && !preview
-                && !keyboard_debug
-                && !verbose
-                && existing_receiver(ip, port)
-            {
-                if desktop {
-                    return open_desktop(&format!("http://{address}:{port}"), &token(false)?);
-                }
-                if no_pairing_output {
-                    println!("Ghostpad is already running at http://{address}:{port}.");
-                    return Ok(());
-                }
-                println!(
-                    "\n  Ghostpad is already running at http://{address}:{port}.\n  Showing its saved pairing QR; the original terminal controls the receiver.\n  Startup options apply only when starting a new receiver.\n"
-                );
-                pairing(&format!("http://{address}:{port}"), &token(false)?);
-                println!(
-                    "  Press Enter to close this pairing window. The receiver will keep running."
-                );
-                let mut line = String::new();
-                io::stdin().read_line(&mut line)?;
-                return Ok(());
+            if can_reopen && existing_receiver(ip, port) {
+                return reopen(ip, port, desktop, no_pairing_output, automatic);
             }
-            return Err(io::Error::new(
-                error.kind(),
-                format!(
-                    "Address {address}:{port} is already in use. Stop the existing receiver before changing its options or rotating its key, or use a different --port."
-                ),
-            ));
+            return Err(address_in_use(ip, port));
         }
         Err(error) => return Err(error),
     };
+    let mut lan = None;
+    if automatic {
+        listener.set_nonblocking(true)?;
+        if let Ok(ip) = network::address() {
+            match bind_lan(ip, port, hostname.as_deref()) {
+                Ok(bound) => lan = Some(bound),
+                Err(error) if error.kind() == io::ErrorKind::AddrInUse => {
+                    if can_reopen && existing_receiver(ip, port) {
+                        return reopen(ip, port, desktop, no_pairing_output, false);
+                    }
+                    return Err(address_in_use(ip, port));
+                }
+                Err(error) if error.kind() == io::ErrorKind::AddrNotAvailable => {
+                    // The address changed during startup. The subscribed socket
+                    // already has the event that will trigger another bind.
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
     let pointer = Pointer::new(preview).map_err(|e| {
         io::Error::other(format!(
             "Cannot create Linux input device: {e}. See README for uinput setup, or use --preview."
         ))
     })?;
-    let origin = format!(
-        "{}://{address}:{port}",
-        if tls.is_some() { "https" } else { "http" }
-    );
+    let own_address = Arc::new(PairingAddress::new(
+        ip,
+        port,
+        tls.is_some(),
+        hostname.as_deref(),
+    ));
+    let origin = own_address.ip.clone();
     let token = token(rotate)?;
+    let pairing_address = if automatic {
+        lan.as_ref().map(|(_, address)| address.clone())
+    } else {
+        Some(own_address.clone())
+    };
     println!(
         "\n  GHOSTPAD · {}\n",
         if preview {
@@ -539,7 +692,16 @@ fn run() -> io::Result<()> {
             "  Pairing is open in your browser. Stop Ghostpad from that page, or press Ctrl+C.\n"
         );
     } else if !no_pairing_output {
-        pairing(&origin, &token);
+        if let Some(address) = &pairing_address {
+            pairing(address.origin(), &address.ip, &token);
+            if address.hostname.is_some() {
+                println!("  IP pairing link: {}/#key={token}", address.ip);
+            }
+        } else {
+            println!(
+                "  Waiting for a private LAN address. Open desktop pairing for the current QR code."
+            );
+        }
         println!("  Desktop pairing: {origin}/desktop#key={token}\n");
         println!("  Keep the original receiver terminal open. Ctrl+C stops the receiver.\n");
     } else {
@@ -547,12 +709,17 @@ fn run() -> io::Result<()> {
             "  Pairing output hidden. Run ghostpad --desktop with the same address/port to pair.\n"
         );
     }
-    if ip.is_loopback() {
+    if ip.is_loopback() && !automatic {
         eprintln!(
             "ghostpad: this address is computer-only. Use --address with your Wi-Fi IPv4 address for your phone."
         );
     }
-    println!("  Page check: {origin}/health (should show ghostpad/1)\n");
+    if let Some(address) = &pairing_address {
+        println!(
+            "  Phone page check: {}/health (should show ghostpad/1)\n",
+            address.ip
+        );
+    }
     let state = Arc::new(State {
         verbose,
         keyboard_debug,
@@ -560,30 +727,152 @@ fn run() -> io::Result<()> {
         origin,
         preview,
         pointer: Mutex::new(pointer),
+        controller: Mutex::new(Controller::default()),
         clients: AtomicUsize::new(0),
         tls,
-        pairing_qr: OnceLock::new(),
+        pairing: RwLock::new(pairing_address),
         stopping: AtomicBool::new(false),
     });
-    for tcp in listener.incoming() {
-        let tcp = tcp?;
-        if state.stopping.load(Ordering::Acquire) {
-            break;
+    if let Some(monitor) = &mut monitor {
+        while !state.stopping.load(Ordering::Acquire) {
+            let [changed, local_ready, lan_ready] =
+                monitor.wait(&listener, lan.as_ref().map(|(listener, _)| listener))?;
+            if state.stopping.load(Ordering::Acquire) {
+                break;
+            }
+            if changed {
+                lan = select_lan(lan, port, hostname.as_deref());
+                *state.pairing.write().unwrap() = lan.as_ref().map(|(_, address)| address.clone());
+            }
+            if local_ready {
+                accept_ready(&listener, &state, None)?;
+            }
+            if let Some((listener, address)) = lan.as_ref().filter(|_| lan_ready) {
+                accept_ready(listener, &state, Some(address))?;
+            }
         }
-        if verbose {
-            eprintln!("ghostpad: incoming connection from {}", tcp.peer_addr()?);
+    } else {
+        for tcp in listener.incoming() {
+            let tcp = tcp?;
+            if state.stopping.load(Ordering::Acquire) {
+                break;
+            }
+            dispatch(tcp, &state, Some(&own_address));
         }
-        if state.clients.fetch_add(1, Ordering::Relaxed) >= 16 {
-            state.clients.fetch_sub(1, Ordering::Relaxed);
-            continue;
-        }
-        let state = state.clone();
-        std::thread::spawn(move || match serve(tcp, state) {
-            Err(error) if verbose => eprintln!("ghostpad: connection ended: {error}"),
-            _ => {}
-        });
     }
     Ok(())
+}
+
+fn select_lan(
+    current: Option<(TcpListener, Arc<PairingAddress>)>,
+    port: u16,
+    hostname: Option<&str>,
+) -> Option<(TcpListener, Arc<PairingAddress>)> {
+    let ip = network::address().ok()?;
+    if current.as_ref().is_some_and(|(listener, _)| {
+        listener
+            .local_addr()
+            .is_ok_and(|address| address.ip() == ip)
+    }) {
+        return current;
+    }
+    match bind_lan(ip, port, hostname) {
+        Ok(bound) => Some(bound),
+        Err(error) => {
+            eprintln!("ghostpad: cannot listen on {ip}:{port}: {error}");
+            None
+        }
+    }
+}
+
+fn bind_lan(
+    ip: Ipv4Addr,
+    port: u16,
+    hostname: Option<&str>,
+) -> io::Result<(TcpListener, Arc<PairingAddress>)> {
+    let listener = TcpListener::bind((ip, port))?;
+    listener.set_nonblocking(true)?;
+    eprintln!("ghostpad: accepting phone connections at http://{ip}:{port}");
+    Ok((
+        listener,
+        Arc::new(PairingAddress::new(ip, port, false, hostname)),
+    ))
+}
+
+fn address_in_use(ip: Ipv4Addr, port: u16) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::AddrInUse,
+        format!(
+            "Address {ip}:{port} is already in use. Stop the existing receiver before changing its options or rotating its key, or use a different --port."
+        ),
+    )
+}
+
+fn reopen(
+    ip: Ipv4Addr,
+    port: u16,
+    desktop: bool,
+    no_pairing_output: bool,
+    automatic: bool,
+) -> io::Result<()> {
+    let origin = format!("http://{ip}:{port}");
+    if desktop {
+        return open_desktop(&origin, &token(false)?);
+    }
+    if no_pairing_output {
+        println!("Ghostpad is already running at {origin}.");
+        return Ok(());
+    }
+    println!(
+        "\n  Ghostpad is already running at {origin}.\n  Startup options apply only when starting a new receiver.\n"
+    );
+    let token = token(false)?;
+    if automatic {
+        println!(
+            "  Open the desktop pairing page for your current QR code.\n  {origin}/desktop#key={token}\n"
+        );
+    } else {
+        pairing(&origin, &origin, &token);
+    }
+    println!("  Press Enter to close this pairing window. The receiver will keep running.");
+    io::stdin().read_line(&mut String::new())?;
+    Ok(())
+}
+
+fn accept_ready(
+    listener: &TcpListener,
+    state: &Arc<State>,
+    address: Option<&Arc<PairingAddress>>,
+) -> io::Result<()> {
+    // Keep a busy interface from starving the other listener or network events.
+    for _ in 0..16 {
+        match listener.accept() {
+            Ok((tcp, _)) => dispatch(tcp, state, address),
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
+}
+
+fn dispatch(tcp: TcpStream, state: &Arc<State>, address: Option<&Arc<PairingAddress>>) {
+    if state.verbose {
+        if let Ok(peer) = tcp.peer_addr() {
+            eprintln!("ghostpad: incoming connection from {peer}");
+        }
+    }
+    if state.clients.fetch_add(1, Ordering::Relaxed) >= 16 {
+        state.clients.fetch_sub(1, Ordering::Relaxed);
+        return;
+    }
+    let state = state.clone();
+    let address = address.cloned();
+    let verbose = state.verbose;
+    std::thread::spawn(move || match serve(tcp, state, address) {
+        Err(error) if verbose => eprintln!("ghostpad: connection ended: {error}"),
+        _ => {}
+    });
 }
 
 fn open_desktop(origin: &str, token: &str) -> io::Result<()> {
@@ -637,7 +926,7 @@ fn existing_receiver(ip: std::net::Ipv4Addr, port: u16) -> bool {
     probe().unwrap_or(false)
 }
 
-fn pairing(origin: &str, token: &str) {
+fn pairing(origin: &str, ip_origin: &str, token: &str) {
     let link = format!("{origin}/#key={token}");
     // Secrets travel to qrencode over stdin, not process arguments.
     if let Ok(mut child) = std::process::Command::new("qrencode")
@@ -658,14 +947,14 @@ fn pairing(origin: &str, token: &str) {
     {
         println!(
             "  UFW is enabled: every phone needs a matching firewall rule.\n  Allow one phone: ghostpad-allow-phone PHONE_WIFI_IPV4\n  Or allow phones on this private Wi-Fi: ghostpad-allow-phone --lan {}\n  From source, use ./scripts/allow-phone.sh instead of ghostpad-allow-phone.\n  Add --port {} to the helper if using a custom port.\n",
-            origin
+            ip_origin
                 .split_once("://")
                 .unwrap()
                 .1
                 .split(':')
                 .next()
                 .unwrap(),
-            origin.rsplit_once(':').unwrap().1
+            ip_origin.rsplit_once(':').unwrap().1
         );
     }
 }
@@ -729,9 +1018,15 @@ mod server_tests {
             origin: "http://127.0.0.1:8765".into(),
             preview: true,
             pointer: Mutex::new(Pointer::new(true).unwrap()),
+            controller: Mutex::new(Controller::default()),
             clients: AtomicUsize::new(0),
             tls: None,
-            pairing_qr: OnceLock::new(),
+            pairing: RwLock::new(Some(Arc::new(PairingAddress::new(
+                Ipv4Addr::LOCALHOST,
+                8765,
+                false,
+                None,
+            )))),
             stopping: AtomicBool::new(false),
         }
     }
@@ -749,7 +1044,7 @@ mod server_tests {
     }
     fn run(bytes: Vec<u8>, state: &State) -> (io::Result<()>, Vec<u8>) {
         let mut m = Memory::new(bytes, usize::MAX);
-        let result = handle(&mut m, state);
+        let result = handle(&mut m, state, &state.origin, None);
         (result, m.output)
     }
     fn contains(bytes: &[u8], s: &str) -> bool {
@@ -854,7 +1149,7 @@ mod server_tests {
     #[test]
     fn http_headers_are_written_together_before_the_body() {
         let mut m = Memory::new(request("/health"), usize::MAX);
-        handle(&mut m, &state()).unwrap();
+        handle(&mut m, &state(), "http://127.0.0.1:8765", None).unwrap();
         assert_eq!(m.reads, 1);
         assert_eq!(m.writes.len(), 2);
         assert!(m.output[..m.writes[0]].ends_with(b"\r\n\r\n"));
@@ -870,7 +1165,7 @@ mod server_tests {
         req.extend(frame(8, &[]));
         for chunk in [1, 2, 3, 7, 125, usize::MAX] {
             let mut m = Memory::new(req.clone(), chunk);
-            handle(&mut m, &s).unwrap();
+            handle(&mut m, &s, &s.origin, None).unwrap();
             assert!(contains(&m.output, "ready:preview"));
             assert_eq!(m.deadlines, 203, "Every frame retains its read deadline");
             assert_eq!(m.writes.len(), 203, "Upgrade, ready, 200 ACKs, close");

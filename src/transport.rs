@@ -58,10 +58,16 @@ impl Drop for Tls {
 }
 pub trait Stream: Read + Write {
     fn begin_read(&mut self) {}
+    fn controller_socket(&self) -> io::Result<Option<TcpStream>> {
+        Ok(None)
+    }
 }
 impl<T: Stream + ?Sized> Stream for &mut T {
     fn begin_read(&mut self) {
         (**self).begin_read();
+    }
+    fn controller_socket(&self) -> io::Result<Option<TcpStream>> {
+        (**self).controller_socket()
     }
 }
 // Read whatever is already available in one operation. Writes bypass the read
@@ -88,6 +94,9 @@ impl<S: Stream> Write for Buffered<S> {
 impl<S: Stream> Stream for Buffered<S> {
     fn begin_read(&mut self) {
         self.0.get_mut().begin_read();
+    }
+    fn controller_socket(&self) -> io::Result<Option<TcpStream>> {
+        self.0.get_ref().controller_socket()
     }
 }
 pub struct Connection {
@@ -122,6 +131,9 @@ impl Connection {
 impl Stream for Connection {
     fn begin_read(&mut self) {
         self.deadline = Instant::now() + Duration::from_secs(5);
+    }
+    fn controller_socket(&self) -> io::Result<Option<TcpStream>> {
+        self.tcp.try_clone().map(Some)
     }
 }
 impl Read for Connection {

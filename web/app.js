@@ -48,6 +48,8 @@ preferences();
 sensitivity.oninput = preferences;
 natural.onchange = preferences;
 let socket = null, ready = false, paused = false, retry = 500, reconnect = 0, heartbeat = 0, lastPong = 0, connectionDeadline = 0;
+let tabId = '', hasControlled = false, waitingForControl = false;
+const takeControl = $('take-control');
 let closeConnection = null;
 let lastMotion = -Infinity, lastPing = null;
 let flow = null;
@@ -289,23 +291,29 @@ scrollSide = side;
 save('scrollSide', side);
 scrollSidePreference();
 });
-function connect() {
+function connect(takeover = false) {
 clearTimeout(reconnect);
-if (paused || document.hidden)
+if (paused || document.hidden || (waitingForControl && !takeover))
 return;
 if (socket && (socket.readyState === WebSocket.CLOSING || socket.readyState === WebSocket.CLOSED))
 closeConnection === null || closeConnection === void 0 ? void 0 : closeConnection(false);
 if (socket)
 return;
 if (!key) {
-status('Pair your phone', 'Scan the QR code in the Ghostpad receiver terminal.');
-$('hint').textContent = 'Scan your computer’s QR code to connect.';
+status('Pair your phone', 'Scan your computer’s Ghostpad QR code.');
 return;
 }
+waitingForControl = false;
+takeControl.hidden = true;
+if (retry === 500) {
+if (hasControlled && !takeover)
+status('Reconnecting', 'Trying to reach your computer. Your pairing is saved.');
+else
 status('Connecting', 'Looking for your computer on this Wi-Fi network.');
+}
 let ws;
 try {
-ws = new WebSocket(`${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws`, 'ghostpad.flow.v1');
+ws = new WebSocket(`${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws`, ['ghostpad.session.v1', 'ghostpad.flow.v1']);
 ws.binaryType = 'arraybuffer';
 }
 catch (_a) {
@@ -328,6 +336,11 @@ ws.close();
 return;
 }
 try {
+if (ws.protocol === 'ghostpad.session.v1') {
+tabId || (tabId = Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join(''));
+ws.send(`${key}:${tabId}${takeover ? 't' : hasControlled ? 'r' : 'n'}`);
+}
+else
 ws.send(key);
 }
 catch (_a) {
@@ -356,10 +369,11 @@ $('reload').hidden = true;
 if (ready)
 return;
 ready = true;
+hasControlled = true;
 retry = 500;
 lastPong = performance.now();
 lastPing = null;
-if (ws.protocol === 'ghostpad.flow.v1')
+if (ws.protocol === 'ghostpad.flow.v1' || ws.protocol === 'ghostpad.session.v1')
 flow = new InputFlow(ws, {
 now: () => performance.now(), later: (fn, ms) => window.setTimeout(fn, ms), clear: id => clearTimeout(id),
 }, () => close());
@@ -381,8 +395,11 @@ status('Pair again', 'Pairing was revoked. Scan the receiver’s new QR code.');
 close();
 }
 else if (e.data === 'busy') {
-status('Computer busy', 'Another phone is connected. Disconnect it to use this phone.');
-close();
+waitingForControl = ws.protocol === 'ghostpad.session.v1';
+takeControl.hidden = !waitingForControl;
+$('reload').hidden = true;
+status('Computer busy', waitingForControl ? 'Another Ghostpad tab has control. Tap below to switch to this one.' : 'Another phone is connected. Disconnect it to use this phone.');
+close(!waitingForControl);
 }
 };
 ws.onerror = () => close();
@@ -393,6 +410,7 @@ finish(shouldRetry);
 function finish(shouldRetry = true) {
 if (socket !== ws)
 return;
+const wasReady = ready;
 clearTimeout(connectionDeadline);
 flow === null || flow === void 0 ? void 0 : flow.stop();
 flow = null;
@@ -404,8 +422,11 @@ clearInterval(heartbeat);
 cancel();
 if (shouldRetry && !paused && !document.hidden) {
 if ($('status').textContent !== 'Computer busy')
-status('Reconnecting', 'Keep both devices on the same Wi-Fi and allow this phone through the computer’s firewall. Reconnecting automatically.');
-reconnect = window.setTimeout(connect, retry + Math.random() * 200);
+status('Reconnecting', retry < 2000
+? 'Trying to reach your computer. Your pairing is saved.'
+: 'Can’t reach your computer. Check its Ghostpad window and your Wi-Fi. We’ll keep trying.');
+reconnect = window.setTimeout(connect, wasReady ? 0 : retry + Math.random() * 200);
+if (!wasReady)
 retry = Math.min(8000, retry * 1.7);
 }
 }
@@ -417,8 +438,9 @@ suspend();
 else
 connect(); });
 window.addEventListener('pagehide', suspend);
-window.addEventListener('pageshow', connect);
-window.addEventListener('online', connect);
+window.addEventListener('pageshow', () => connect());
+window.addEventListener('online', () => connect());
+takeControl.onclick = () => { retry = 500; connect(true); };
 let settingsOpener = $('settings-open');
 let preferredNative = read('keyboardMode') !== 'grid';
 function closeSettings(restore = true) {
@@ -545,13 +567,24 @@ event.stopImmediatePropagation();
 }
 }, { capture: true, passive: false });
 }
-$('disconnect').onclick = () => { paused = !paused; $('disconnect').textContent = paused ? 'Reconnect' : 'Disconnect'; if (paused) {
+$('disconnect').onclick = () => {
+if (waitingForControl) {
+closeSettings();
+takeControl.focus();
+return;
+}
+paused = !paused;
+$('disconnect').textContent = paused ? 'Reconnect' : 'Disconnect';
+if (paused) {
 suspend();
 status('Disconnected', 'Tap Reconnect when you’re ready.');
 }
-else
-connect(); };
-$('forget').onclick = () => { paused = true; suspend(); key = ''; save('key', ''); status('Pair your phone', 'Pairing forgotten on this phone. Scan a QR code to connect again.'); $('hint').textContent = 'Scan your computer’s QR code to connect.'; closeSettings(); };
+else {
+retry = 500;
+connect();
+}
+};
+$('forget').onclick = () => { paused = true; waitingForControl = false; takeControl.hidden = true; suspend(); key = ''; save('key', ''); status('Pair your phone', 'Pairing forgotten on this phone. Scan a QR code to connect again.'); closeSettings(); };
 function updateModifiers() {
 for (const id of ['mod-super', 'key-super'])
 $(id).setAttribute('aria-pressed', String(modifiers.has('super')));
@@ -698,6 +731,7 @@ keyboardPanel.hidden = false;
 $('keyboard-toggle').setAttribute('aria-expanded', 'true');
 bodyClasses.toggle('keyboard-open', true);
 $('typing-help').textContent = typingHelp;
+keyboardPanel.scrollTop = 0;
 keyboardPanel.querySelector('.sheet-scroll').scrollTop = 0;
 keyboardMode(preferredNative);
 if (!preferredNative)
@@ -973,7 +1007,7 @@ item.setAttribute('aria-pressed', String(item === button));
 });
 }
 let viewportFrame = 0, viewportUntil = 0, viewportFocused = false;
-let viewportFullHeight = 0, viewportHeight = 0;
+let viewportFullHeight = 0, viewportHeight = 0, viewportWidth = 0;
 let openingTimer = 0;
 function stopOpening() {
 clearTimeout(openingTimer);
@@ -988,8 +1022,6 @@ viewportFrame = requestAnimationFrame(() => { viewportFrame = 0; fitViewport(); 
 }
 function watchViewport(focused) {
 var _a;
-if (focused && !viewportFocused)
-viewportFullHeight = main.getBoundingClientRect().height;
 viewportFocused = focused;
 cancelAnimationFrame(viewportFrame);
 viewportFrame = 0;
@@ -1001,22 +1033,27 @@ fitViewport();
 function fitViewport() {
 var _a;
 const viewport = window.visualViewport;
-const rect = main.getBoundingClientRect(), height = (viewport === null || viewport === void 0 ? void 0 : viewport.height) || window.innerHeight;
+const rect = main.getBoundingClientRect();
+const layoutHeight = Math.min(rect.height, window.innerHeight);
+const height = Math.min(layoutHeight, (viewport === null || viewport === void 0 ? void 0 : viewport.height) || layoutHeight);
 const top = Math.max(0, (viewport === null || viewport === void 0 ? void 0 : viewport.offsetTop) || 0, (parseFloat(main.style.top) || 0) - rect.top);
-const fullHeight = rect.height;
-if (viewportFocused && Math.abs(viewportFullHeight - fullHeight) < 1 && height >= fullHeight - 1 && parseFloat(main.style.paddingBottom) > 80) {
+if (!viewportHeight || viewportWidth !== rect.width) {
+viewportFullHeight = layoutHeight;
+viewportWidth = rect.width;
+}
+else if (viewportFocused && viewportFullHeight - viewportHeight > 80 && height >= viewportFullHeight - 1) {
 viewportFocused = false;
 (_a = window.scrollTo) === null || _a === void 0 ? void 0 : _a.call(window, 0, 0);
 }
-viewportFullHeight = fullHeight;
+viewportFullHeight = Math.max(viewportFullHeight, layoutHeight);
 const focused = viewportFocused && !keyboardPanel.hidden;
 const watching = performance.now() < viewportUntil;
 if (focused) {
-const opening = fullHeight - height > 80 && (parseFloat(main.style.paddingBottom) || 0) <= 80;
+const layoutResized = viewportFullHeight - layoutHeight > 80;
+if (layoutResized && openingTimer)
+stopOpening();
+const opening = !layoutResized && layoutHeight - height > 80 && (!viewportHeight || layoutHeight - viewportHeight <= 80);
 const before = opening ? pad.getBoundingClientRect().height : 0;
-const inset = `${Math.max(0, fullHeight - height)}px`;
-if (main.style.paddingBottom !== inset)
-main.style.paddingBottom = inset;
 if (viewportHeight !== height) {
 viewportHeight = height;
 main.style.setProperty('--view-height', `${height}px`);
@@ -1038,7 +1075,6 @@ else {
 stopOpening();
 viewportUntil = 0;
 viewportHeight = 0;
-main.style.removeProperty('padding-bottom');
 main.style.removeProperty('top');
 main.style.removeProperty('--view-height');
 }

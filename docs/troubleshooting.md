@@ -9,8 +9,8 @@ On the phone, open the `/health` address shown by Ghostpad. It should display `g
 If it works only on the computer:
 
 1. Keep both devices on the same Wi-Fi. Guest, hotel, campus, and some hotspot networks isolate clients even when the Wi-Fi name matches.
-2. Use the **computer's Wi-Fi IPv4 address**, not a VPN/container address. Specify it explicitly if needed: `ghostpad --desktop --address 192.168.1.42`.
-3. Check the firewall. With UFW, use `ghostpad-allow-phone PHONE_WIFI_IPV4 --dry-run`, inspect the command, then rerun without `--dry-run`.
+2. Use the **computer's LAN IPv4 address** shown by Ghostpad. When Wi-Fi and Ethernet or USB tethering share a subnet, Ghostpad can select the adapter Linux prefers. The desktop page refreshes after an address change in automatic HTTP mode. To pin the receiver to an address, run `ghostpad --desktop --address 192.168.1.42`.
+3. Check the firewall. The desktop help shows the command for your current private subnet when you use UFW. To allow just one phone, use `ghostpad-allow-phone PHONE_WIFI_IPV4 --dry-run`, inspect the command, then rerun without `--dry-run`.
 4. Find the **phone's** IPv4 address in its Wi-Fi settings. A rule for an old phone or address does not allow a new one.
 
 The helper refuses public/routed targets. It does not support firewalld or nftables directly. For those firewalls, create an equivalent inbound rule limited to the phone, private interface, and Ghostpad TCP port. Never disable the entire firewall to troubleshoot Ghostpad.
@@ -18,11 +18,11 @@ The helper refuses public/routed targets. It does not support firewalld or nftab
 To deliberately allow all devices on your computer's current private LAN subnet with UFW:
 
 ```sh
-ghostpad-allow-phone --lan COMPUTER_WIFI_IPV4 --dry-run
-ghostpad-allow-phone --lan COMPUTER_WIFI_IPV4
+ghostpad-allow-phone --lan COMPUTER_LAN_IPV4 --dry-run
+ghostpad-allow-phone --lan COMPUTER_LAN_IPV4
 ```
 
-Use the computer's address from the pairing page for `--lan`. This derives the actual subnet/interface and restricts the destination address and port; all devices on that subnet can then reach the service, but still need the pairing key to control input. Use only a trusted network. Update rules if DHCP changes the phone/computer address or interface. Add `--port PORT` for a custom receiver port.
+Use the computer's IP address from the pairing page for `--lan`. The rule is scoped to the interface, subnet, and Ghostpad TCP port, and survives address changes within that subnet. Devices still need the pairing key to control input. Use it on trusted networks and update the rule for a different subnet or interface. Add `--port PORT` for a custom receiver port.
 
 Ghostpad accepts private IPv4 addresses and loopback only. `127.0.0.1` is for tests on the computer and cannot be opened from the phone. A private bind address does not make an untrusted network safe or prevent router port forwarding. VPN-only, public-address, IPv6-only, and routed discovery setups are outside this release's supported path.
 
@@ -32,9 +32,9 @@ If `/health` also fails on the computer, check the process, address, port, and H
 
 Use the complete QR/link including its `#key=…` fragment. Open it in Safari on iPhone or Chrome on Android. A manually typed address without the fragment cannot pair a new browser. Refresh the phone after installing a receiver update.
 
-If the key was rotated, scan the new QR. If Ghostpad says it is busy, disconnect the other phone or wait for its failed connection to expire. The receiver checks the exact Host and WebSocket Origin; use its printed IP and port rather than a custom hostname or reverse proxy.
+If the key was rotated, scan the new QR. If Ghostpad says it is busy, tap **Use this phone** to transfer control. The receiver requires the exact IP origin or the hostname configured with `--hostname`.
 
-After a Wi-Fi/address change, stop the old receiver, start it on the new address, and scan again. Browser storage belongs to an origin, so changing address, port, or HTTP/HTTPS can require pairing again. A router DHCP reservation can help keep the computer address stable.
+After an IP change, scan the refreshed QR if your phone was using an IP link. Restart receivers pinned with `--address` or using TLS if their IP binding changes. Browser storage belongs to an origin, so changing the address, port, or HTTP/HTTPS scheme can require pairing again. A working `.local` hostname or a router DHCP reservation can keep the browser address stable.
 
 ## No QR code
 
